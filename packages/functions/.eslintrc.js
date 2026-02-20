@@ -1,0 +1,44 @@
+module.exports = {
+  root: true,
+  env: {
+    es6: true,
+    node: true,
+  },
+  extends: [
+    "eslint:recommended",
+    "plugin:import/errors",
+    "plugin:import/warnings",
+    "plugin:import/typescript",
+    "google",
+    "plugin:@typescript-eslint/recommended",
+  ],
+  parser: "@typescript-eslint/parser",
+  parserOptions: {
+    project: ["tsconfig.json", "tsconfig.dev.json"],
+    tsconfigRootDir: __dirname,
+    sourceType: "module",
+  },
+  ignorePatterns: [
+    "/lib/**/*", // Ignore built files.
+    "/generated/**/*", // Ignore generated files.
+  ],
+  plugins: [
+    "@typescript-eslint",
+    "import",
+  ],
+  rules: {
+    "quotes": ["error", "double"],
+    "import/no-unresolved": 0,
+    "indent": ["error", 2],
+    /*
+    
+    "no-multi-spaces": "off",
+    "no-irregular-whitespace": "off",
+    */
+    // Desactiva las lineas vacias
+    "no-trailing-spaces": "off",
+    // Desactiva la regla para que no requiera ni prohíba espacios dentro de las llaves
+    "object-curly-spacing": "off",
+    "max-len": ["error", { "code": 120, "ignoreUrls": true, "ignoreStrings": true }],
+  },
+};
