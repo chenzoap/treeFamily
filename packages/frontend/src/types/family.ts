@@ -9,6 +9,7 @@ export interface Person {
   birthDate: string;
   birthPlace: string;
   isRoot?: boolean;
+  soltero?: boolean; // NUEVO (opcional para compat)
 }
 
 export interface Relationship {

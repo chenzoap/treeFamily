@@ -4,7 +4,8 @@ import { db } from "../lib/firebase";
 import { useTreeStore } from "../store/useTreeStore";
 import { type Person, type Relationship } from "../types/family";
 import TreeView from "./TreeView";
-import AddRelationshipForm from "../components/AddRelationshipForm";
+import Stage4Panel from "../components/Stage4Panel";
+//import AddRelationshipForm from "../components/AddRelationshipForm";
 
 const TreeViewPage = () => {
   const { setPersons, setRelationships, setRootPersonId, loading, setLoading, treeId } = useTreeStore();
@@ -59,7 +60,7 @@ const TreeViewPage = () => {
 
       <div className="flex-1 flex overflow-hidden">
         <aside className="w-80 bg-white border-r p-4 overflow-y-auto">
-          <AddRelationshipForm />
+          <Stage4Panel  />
           <div className="mt-6 p-4 bg-blue-50 rounded-lg border border-blue-100">
             <p className="text-xs text-blue-700">
               <strong>Nota:</strong> Ahora el sistema busca automáticamente hacia arriba (padres) y hacia abajo (hijos).

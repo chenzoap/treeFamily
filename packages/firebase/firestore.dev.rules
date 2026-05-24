@@ -6,4 +6,14 @@ service cloud.firestore {
       allow read, write: if true;
     }
   }
+
+   match /persons/{personId} {
+   allow read: if isTreeOwner(treeId);
+   allow write: if false;
+ }
+ match /relationships/{relId} {
+   allow read: if isTreeOwner(treeId);
+   allow write: if false;
+ }
+
 }
