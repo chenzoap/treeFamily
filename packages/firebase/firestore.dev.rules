@@ -1,19 +1,13 @@
 rules_version = '2';
 
 service cloud.firestore {
-   match /databases/{database}/documents {
-    match /trees/{treeId}/{document=**} {
+  match /databases/{database}/documents {
+
+    // Reglas DEV para emulador local.
+    // Permiten lectura/escritura libre solo en desarrollo.
+    // NO usar este archivo para producción.
+    match /{document=**} {
       allow read, write: if true;
     }
   }
-
-   match /persons/{personId} {
-   allow read: if isTreeOwner(treeId);
-   allow write: if false;
- }
- match /relationships/{relId} {
-   allow read: if isTreeOwner(treeId);
-   allow write: if false;
- }
-
 }

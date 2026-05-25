@@ -18,7 +18,7 @@ const TreeView = () => {
     const descendants = buildDescendants(rootPersonId, persons, unions);
 
     // PASAMOS 'persons' como cuarto argumento para buscar datos de la pareja
-    renderFullTree(svgRef.current, ancestors, descendants, window.innerWidth, persons);
+    renderFullTree(svgRef.current, ancestors, descendants, window.innerWidth, persons, unions);
   }, [persons, relationships, rootPersonId]);
 
   return (

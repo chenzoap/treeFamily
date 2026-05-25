@@ -73,6 +73,44 @@ function formatUnionLabel(unionId: string, persons: PersonLite[]): string {
   return unionId;
 }
 
+function buildChildUnionOptions(
+  persons: PersonLite[],
+  unions: UnionLite[]
+): UnionLite[] {
+  const options = new Map<string, UnionLite>();
+
+  // Primero agregamos las uniones reales existentes:
+  // - union:personaA:personaB
+  // - single:personaA si ya existía por hijos previos
+  unions.forEach((union) => {
+    if (typeof union.id === "string" && union.id.length > 0) {
+      options.set(union.id, union);
+    }
+  });
+
+  // Luego agregamos una opción single para TODAS las personas.
+  // Esto permite que cualquier persona pueda tener hijos aunque no tenga pareja.
+  persons.forEach((person) => {
+    const singleUnionId = `single:${person.id}`;
+
+    if (!options.has(singleUnionId)) {
+      options.set(singleUnionId, { id: singleUnionId });
+    }
+  });
+
+  return Array.from(options.values()).sort((a, b) => {
+    const aIsSingle = a.id.startsWith("single:");
+    const bIsSingle = b.id.startsWith("single:");
+
+    // Mostramos primero las parejas reales y luego las opciones de persona soltera.
+    if (aIsSingle !== bIsSingle) return aIsSingle ? 1 : -1;
+
+    return formatUnionLabel(a.id, persons).localeCompare(
+      formatUnionLabel(b.id, persons)
+    );
+  });
+}
+
 function noticeClasses(kind: Notice["kind"]) {
   if (kind === "success") return "border-green-200 bg-green-50 text-green-800";
   if (kind === "error") return "border-red-200 bg-red-50 text-red-800";
@@ -89,6 +127,11 @@ export default function Stage4Panel() {
   const { persons, relationships, treeId, rootPersonId, selectedPersonId, setSelectedPersonId } = useTreeStore();
 
   const unions = useMemo(() => buildUnions(persons, relationships), [persons, relationships]);
+
+  const childUnionOptions = useMemo(
+  () => buildChildUnionOptions(persons, unions as UnionLite[]),
+  [persons, unions]
+);
 
   // Persona activa: si no hay selected, usa root
   const activePersonId = selectedPersonId ?? rootPersonId ?? null;
@@ -139,12 +182,15 @@ export default function Stage4Panel() {
     // - si no, usa single:active
     setSelectedUnionId((prev) => {
       if (prev) return prev;
-      const candidateUnion = (unions as UnionLite[]).find(
-        (u) => typeof u.id === "string" && u.id.includes(`:${activePersonId}:`)
+      const candidateUnion = childUnionOptions.find(
+        (u) =>
+          u.id.startsWith("union:") &&
+          u.id.split(":").includes(activePersonId)
       );
+
       return candidateUnion?.id ?? `single:${activePersonId}`;
     });
-  }, [activePersonId, unions]);
+  }, [activePersonId, childUnionOptions]);
 
   // Reset notice when switching tab
   useEffect(() => {
@@ -329,7 +375,7 @@ export default function Stage4Panel() {
                 onChange={(e) => setSelectedUnionId(e.target.value)}
               >
                 <option value="">Selecciona unión...</option>
-                {(unions as UnionLite[]).map((u) => (
+                {childUnionOptions.map((u) => (
                   <option key={u.id} value={u.id}>
                     {formatUnionLabel(u.id, persons)}
                   </option>

@@ -2,33 +2,42 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
-    
-    // Función para verificar si el usuario es el dueño del árbol
-    // Usamos getAfter para casos de creación o verificamos el documento existente
+
+    // Verifica que el usuario autenticado sea dueño del árbol.
     function isTreeOwner(treeId) {
-      return request.auth != null && 
-             get(/databases/$(database)/documents/trees/$(treeId)).data.ownerId == request.auth.uid;
+      return request.auth != null
+        && exists(/databases/$(database)/documents/trees/$(treeId))
+        && get(/databases/$(database)/documents/trees/$(treeId)).data.ownerId == request.auth.uid;
     }
 
-    // Reglas para la colección de Árboles
+    // Colección principal de árboles.
     match /trees/{treeId} {
-      // Solo el dueño puede leer su árbol
-      allow read: if request.auth != null && resource.data.ownerId == request.auth.uid;
-      
-      // Bloqueamos escritura directa al documento del árbol (solo vía Admin/Functions)
+      // El usuario solo puede leer árboles donde es owner.
+      allow read: if request.auth != null
+        && resource.data.ownerId == request.auth.uid;
+
+      // La escritura directa queda bloqueada.
+      // Crear/modificar árboles debe hacerse vía Cloud Functions.
       allow write: if false;
 
-      // Reglas para subcolecciones (Persons y Relationships)
+      // Personas del árbol.
       match /persons/{personId} {
+        // El frontend puede leer si el usuario es dueño del árbol.
         allow read: if isTreeOwner(treeId);
-        // CAMBIO: Permitir escribir si eres el dueño del árbol
-        allow write: if isTreeOwner(treeId); 
+
+        // La escritura directa queda bloqueada.
+        // Crear/editar personas debe hacerse vía Cloud Functions.
+        allow write: if false;
       }
 
+      // Relaciones del árbol: PARENT_OF, PARTNER_OF, etc.
       match /relationships/{relId} {
+        // El frontend puede leer si el usuario es dueño del árbol.
         allow read: if isTreeOwner(treeId);
-        // CAMBIO: Permitir escribir si eres el dueño del árbol
-        allow write: if isTreeOwner(treeId);
+
+        // La escritura directa queda bloqueada.
+        // Crear/editar relaciones debe hacerse vía Cloud Functions.
+        allow write: if false;
       }
     }
   }
