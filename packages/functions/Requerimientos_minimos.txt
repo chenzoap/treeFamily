@@ -1,0 +1,33 @@
+Requerimientos Minimos
+
+Pantalla 1: Login/Sign up
+1. Formulario de inicio de sesion/regsitro de usuario
+
+Pantalla 2: Mostrar arbol / crear arbol
+2. Se muestra el arbol que tiene el usuario.
+3. Se muestra un formulario lateral del arbol par agregar mas miembros familiares al arbol genealogico.
+3. Si no hay arbol, usuario vera un formulario para registrar un "arbol minimo".
+
+
+
+
+Glosario
+
+Arbol minimo: Se considera un arbol minimo el mismo usuario como persona y 2 miembros mas. Pueden ser papa, mama, esposa, hij@/hijo@s.
+Tipo de relacion: Por ejemplo: papa, mama, hij@, sobrin@, herman@, ti@, abuel@, prim@, niet@, el cunado del usuario, 
+Parentesco: Que relacion tiene con el usuario. Entre ellas "N/A".
+
+Mockups Minimos
+- Formulario de login/Sign up
+    Campos
+    Primer Nombre **, Segundo Nombre **, Apellido Paterno **, Apellido Materno **, Fecha de nacimiento  **, Lugar de Nacimiento Opcional.
+- Ver arbol
+- Formulario de registro de "arbol minimo"
+    Campos
+    Primer Nombre **, Segundo Nombre **, Apellido Paterno **, Apellido Materno **, Parentesco, Tipo de relacion "de", Perosona de relacion, Fecha de nacimiento  **, Lugar de Nacimiento Opcional.
+- Formulario lateral para agregar mas miembros familiares al arbol genealogico.
+    Campos
+    Primer Nombre **, Segundo Nombre **, Apellido Paterno **, Apellido Materno **, Parentesco, Tipo de relacion "de", Perosona de relacion, Fecha de nacimiento  **, Lugar de Nacimiento Opcional, Fallecid@, Comentario.
+
+
+** = Campo requerido.
