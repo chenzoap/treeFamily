@@ -1,3 +1,17 @@
+/**
+ * LEGACY / TEMPORAL
+ *
+ * Esta pantalla pertenece al flujo antiguo para agregar padres.
+ * Ya no está registrada en App.tsx y no debe usarse en el flujo principal.
+ *
+ * Motivo:
+ * - Usa addPerson y addRelationship directamente.
+ * - Esas funciones ahora están marcadas como legacy.
+ * - El flujo principal de Etapa 4 debe manejarse desde Stage4Panel.
+ *
+ * Mantener temporalmente como referencia hasta confirmar que puede eliminarse.
+ */
+
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";

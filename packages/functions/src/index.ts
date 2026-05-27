@@ -100,9 +100,15 @@ export const createTreeWithRootPerson = onCall(async (request) => {
  * 1.1 
  */
 export const getTreeData = onCall(async (request) => {
-  if (!request.auth) throw new HttpsError("unauthenticated", "Auth requerida");
-  
-  const { treeId } = request.data;
+  const uid = assertAuth(request);
+
+  const { treeId } = request.data as { treeId: string };
+
+  if (!treeId) {
+    throw new HttpsError("invalid-argument", "Falta treeId");
+  }
+
+  await assertIsOwner(treeId, uid);
   
   // Obtenemos personas y relaciones en paralelo para ser más rápidos
   const [personsSnap, relsSnap] = await Promise.all([
@@ -117,7 +123,20 @@ export const getTreeData = onCall(async (request) => {
 });
 
 /**
- * 2. AÑADIR PERSONA
+ * LEGACY / TEMPORAL
+ *
+ * Esta función permite crear personas de forma genérica.
+ * No debe usarse en los flujos principales de Etapa 4.
+ *
+ * Motivo:
+ * - Puede crear personas sin una relación familiar clara.
+ * - No valida parentesco ni contexto genealógico específico.
+ * - Los nuevos flujos deben usar funciones más específicas:
+ *   - addParentToPerson
+ *   - addChildToUnion
+ *   - createUnion
+ *
+ * Mantener temporalmente hasta confirmar que ninguna pantalla activa la usa.
  */
 export const addPerson = onCall(async (request) => {
   if (!request.auth) {
@@ -146,7 +165,20 @@ export const addPerson = onCall(async (request) => {
 });
 
 /**
- * 3. AÑADIR RELACIÓN (Con validaciones A!=B y anti-duplicados)
+ * LEGACY / TEMPORAL
+ *
+ * Esta función permite crear relaciones de forma genérica.
+ * No debe usarse en los flujos principales de Etapa 4.
+ *
+ * Motivo:
+ * - Permite crear relaciones sin reglas específicas.
+ * - Puede generar estados inválidos o duplicados.
+ * - Las relaciones importantes ahora deben pasar por funciones controladas:
+ *   - createUnion para PARTNER_OF
+ *   - addChildToUnion para hijos
+ *   - addParentToPerson para padres/madres
+ *
+ * Mantener temporalmente hasta confirmar que ninguna pantalla activa la usa.
  */
 export const addRelationship = onCall(async (request) => {
   if (!request.auth) {

@@ -167,29 +167,27 @@ export default function Stage4Panel() {
   const addChildToUnionFn = useMemo(() => httpsCallable(functions, "addChildToUnion"), []);
   const addParentToPersonFn = useMemo(() => httpsCallable(functions, "addParentToPerson"), []);
 
-  // Auto-preselecciones basadas en persona activa
+  // Auto-preselecciones basadas en persona activa.
+  // Cuando cambia la persona activa, actualizamos los formularios para operar
+  // sobre esa persona y evitar que queden selecciones antiguas.
   useEffect(() => {
     if (!activePersonId) return;
 
-    // Para “Crear pareja”: si no hay pA seleccionado, usa active
-    setPA((prev) => prev || activePersonId);
+    // Para “Crear pareja”: Persona A pasa a ser la persona activa.
+    setPA(activePersonId);
 
-    // Para “Agregar padre/madre”: si no hay childId seleccionado, usa active
-    setChildId((prev) => prev || activePersonId);
+    // Para “Agregar padre/madre”: el hijo/a objetivo pasa a ser la persona activa.
+    setChildId(activePersonId);
 
-    // Para “Agregar hijo”: intenta preseleccionar una unión relevante
-    // - si existe una union:active+X, usa esa
-    // - si no, usa single:active
-    setSelectedUnionId((prev) => {
-      if (prev) return prev;
-      const candidateUnion = childUnionOptions.find(
-        (u) =>
-          u.id.startsWith("union:") &&
-          u.id.split(":").includes(activePersonId)
-      );
+    // Para “Agregar hijo/a”: preseleccionamos una unión donde participe la persona activa.
+    // Si no tiene pareja, usamos su opción single:<personId>.
+    const candidateUnion = childUnionOptions.find(
+      (u) =>
+        u.id.startsWith("union:") &&
+        u.id.split(":").includes(activePersonId)
+    );
 
-      return candidateUnion?.id ?? `single:${activePersonId}`;
-    });
+    setSelectedUnionId(candidateUnion?.id ?? `single:${activePersonId}`);
   }, [activePersonId, childUnionOptions]);
 
   // Reset notice when switching tab

@@ -8,6 +8,7 @@
   "scripts": {
     "install:all": "npm install",
     "firebase:seed": "wait-on tcp:127.0.0.1:8080 && node scripts/seed-firestore.mjs",
+    "validate:tree": "node scripts/validate-tree-data.mjs",
 
     "web:dev": "npm run dev -w packages/frontend",
     
