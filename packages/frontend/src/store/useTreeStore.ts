@@ -24,6 +24,7 @@ interface TreeState {
 
   // Acción combinada para facilitar la creación inicial
   setTreeData: (treeId: string, rootPersonId: string) => void;
+  resetTree: () => void;
 }
 
 export const useTreeStore = create<TreeState>()(
@@ -44,6 +45,15 @@ export const useTreeStore = create<TreeState>()(
       setLoading: (loading) => set({ loading }),
       setTreeData: (treeId, rootPersonId) =>
         set({ treeId, rootPersonId, selectedPersonId: rootPersonId }),
+      resetTree: () =>
+        set({
+          persons: [],
+          relationships: [],
+          rootPersonId: null,
+          treeId: null,
+          selectedPersonId: null,
+          loading: false,
+        }),
     }),
     {
       name: 'family-tree-storage',

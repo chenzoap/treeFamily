@@ -1,19 +1,21 @@
-// packages/frontend/src/App.tsx
-import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
-import CreateMe from './pages/CreateMe';
-import TreeViewPage from './pages/TreeViewPage'; // Cambiamos el nombre para diferenciar la página del componente
+import { BrowserRouter as Router, Routes, Route, Navigate } from "react-router-dom";
+import LoginPage from "./pages/LoginPage";
+import SignupPage from "./pages/SignupPage";
+import CreateProfilePage from "./pages/CreateProfilePage";
+import TreeViewPage from "./pages/TreeViewPage";
 
 function App() {
   return (
     <Router>
       <div className="min-h-screen bg-gray-50">
         <Routes>
-          <Route path="/create-me" element={<CreateMe />} />
-          
-          {/* Esta será la base de operaciones del árbol */}
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/signup" element={<SignupPage />} />
+          <Route path="/create-profile" element={<CreateProfilePage />} />
+          <Route path="/create-me" element={<Navigate to="/create-profile" replace />} />
           <Route path="/tree" element={<TreeViewPage />} />
-
-          <Route path="*" element={<Navigate to="/create-me" />} />
+          <Route path="/" element={<Navigate to="/tree" replace />} />
+          <Route path="*" element={<Navigate to="/tree" replace />} />
         </Routes>
       </div>
     </Router>

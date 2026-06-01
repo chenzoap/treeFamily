@@ -6,8 +6,8 @@ export interface Person {
   middleName?: string;
   lastName: string;
   secondLastName?: string;
-  birthDate: string;
-  birthPlace: string;
+  birthDate?: string;
+  birthPlace?: string;
   isRoot?: boolean;
   soltero?: boolean; // NUEVO (opcional para compat)
 }
@@ -17,6 +17,7 @@ export interface Relationship {
   fromPersonId: string;
   toPersonId: string;
   type: RelationshipType;
+  parentRole?: "father" | "mother";
 }
 
 export interface Union {

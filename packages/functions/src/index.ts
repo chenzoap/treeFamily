@@ -41,6 +41,32 @@ function parseUnionId(unionId: string): { kind: "union"; a: string; b: string } 
   }
   throw new HttpsError("invalid-argument", "unionId inválido");
 }
+
+function cleanString(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function assertRequiredString(value: unknown, message: string): string {
+  const cleaned = cleanString(value);
+  if (!cleaned) throw new HttpsError("invalid-argument", message);
+  return cleaned;
+}
+
+function normalizePersonPayload(personData: PersonPayload, uid: string, timestamp: FirebaseFirestore.FieldValue) {
+  return {
+    firstName: assertRequiredString(personData.firstName, "La persona necesita nombre."),
+    middleName: cleanString(personData.middleName),
+    lastName: assertRequiredString(personData.lastName, "La persona necesita apellido."),
+    secondLastName: cleanString(personData.secondLastName),
+    birthDate: cleanString(personData.birthDate),
+    birthPlace: cleanString(personData.birthPlace),
+    soltero: false,
+    ownerId: uid,
+    isRoot: false,
+    createdAt: timestamp,
+    updatedAt: timestamp,
+  };
+}
 /* eslint-enable require-jsdoc */
 
 
@@ -48,20 +74,38 @@ function parseUnionId(unionId: string): { kind: "union"; a: string; b: string } 
  * 1. CREAR ÁRBOL CON PERSONA RAÍZ (Actualizada con nuevos campos)
  */
 export const createTreeWithRootPerson = onCall(async (request) => {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "Debes estar autenticado.");
-  }
+  const uid = assertAuth(request);
 
-  // Extraemos todos los nuevos campos del request
-  const { 
-    treeName, 
-    firstName, 
-    middleName, 
-    lastName, 
-    secondLastName, 
-    birthDate, 
+  const {
+    treeName,
+    firstName,
+    middleName,
+    lastName,
+    secondLastName,
+    birthDate,
     birthPlace,
   } = request.data;
+
+  const normalizedTreeName = assertRequiredString(treeName, "El nombre del árbol es requerido.");
+  const normalizedFirstName = assertRequiredString(firstName, "Tu nombre es requerido.");
+  const normalizedLastName = assertRequiredString(lastName, "Tu apellido es requerido.");
+  const normalizedBirthDate = assertRequiredString(
+    birthDate,
+    "Tu fecha de nacimiento es requerida para crear tu perfil."
+  );
+
+  const existingTreeSnap = await db
+    .collection("trees")
+    .where("ownerId", "==", uid)
+    .limit(1)
+    .get();
+
+  if (!existingTreeSnap.empty) {
+    throw new HttpsError(
+      "already-exists",
+      "Ya tienes un árbol creado. Inicia sesión para continuar con tu árbol existente."
+    );
+  }
 
   const batch = db.batch();
   const timestamp = FieldValue.serverTimestamp();
@@ -70,34 +114,63 @@ export const createTreeWithRootPerson = onCall(async (request) => {
   const personRef = treeRef.collection("persons").doc();
 
   batch.set(treeRef, {
-    name: treeName,
-    ownerId: request.auth.uid,
+    name: normalizedTreeName,
+    ownerId: uid,
     rootPersonId: personRef.id,
+    visibility: "private",
     createdAt: timestamp,
     updatedAt: timestamp,
   });
 
-  // Guardamos la persona raíz con la nueva estructura
   batch.set(personRef, {
-    firstName,
-    middleName: middleName || "",
-    lastName,
-    secondLastName: secondLastName || "",
-    birthDate,
-    birthPlace,    
+    firstName: normalizedFirstName,
+    middleName: cleanString(middleName),
+    lastName: normalizedLastName,
+    secondLastName: cleanString(secondLastName),
+    birthDate: normalizedBirthDate,
+    birthPlace: cleanString(birthPlace),
     soltero: false,
-    ownerId: request.auth.uid,
+    ownerId: uid,
     isRoot: true,
     createdAt: timestamp,
     updatedAt: timestamp,
   });
 
   await batch.commit();
-  return { treeId: treeRef.id, rootPersonId: personRef.id };
+  return { treeId: treeRef.id, rootPersonId: personRef.id, alreadyExisted: false };
 });
 
 /**
- * 1.1 
+ * 1.1 Obtener el árbol principal del usuario autenticado.
+ *
+ * Etapa 5:
+ * - Evita crear árboles duplicados.
+ * - Permite detectar si el usuario ya completó onboarding.
+ */
+export const getMyTreeSummary = onCall(async (request) => {
+  const uid = assertAuth(request);
+
+  const treeSnap = await db
+    .collection("trees")
+    .where("ownerId", "==", uid)
+    .limit(1)
+    .get();
+
+  if (treeSnap.empty) {
+    return { treeId: null, rootPersonId: null };
+  }
+
+  const treeDoc = treeSnap.docs[0];
+  const treeData = treeDoc.data();
+
+  return {
+    treeId: treeDoc.id,
+    rootPersonId: treeData.rootPersonId ?? null,
+  };
+});
+
+/**
+ * 1.2 Obtener datos completos de un árbol.
  */
 export const getTreeData = onCall(async (request) => {
   const uid = assertAuth(request);
@@ -334,9 +407,68 @@ type PersonPayload = {
   middleName?: string;
   lastName: string;
   secondLastName?: string;
-  birthDate: string;
-  birthPlace: string;
+  birthDate?: string;
+  birthPlace?: string;
 };
+
+export const addPartnerToPerson = onCall(async (request) => {
+  const uid = assertAuth(request);
+
+  const { treeId, personId, partnerData } = request.data as {
+    treeId: string;
+    personId: string;
+    partnerData: PersonPayload;
+  };
+
+  if (!treeId || !personId || !partnerData) {
+    throw new HttpsError("invalid-argument", "Faltan datos obligatorios.");
+  }
+
+  if (!partnerData.firstName || !partnerData.lastName) {
+    throw new HttpsError("invalid-argument", "La pareja necesita nombre y apellido.");
+  }
+
+  await assertIsOwner(treeId, uid);
+
+  const treeRef = db.collection("trees").doc(treeId);
+  const personsCol = treeRef.collection("persons");
+  const relsCol = treeRef.collection("relationships");
+  const timestamp = FieldValue.serverTimestamp();
+
+  const personRef = personsCol.doc(personId);
+  const partnerRef = personsCol.doc();
+  const relRef = relsCol.doc();
+
+  await db.runTransaction(async (tx) => {
+    const personSnap = await tx.get(personRef);
+
+    if (!personSnap.exists) {
+      throw new HttpsError("not-found", "La persona seleccionada no existe.");
+    }
+
+    tx.set(partnerRef, normalizePersonPayload(partnerData, uid, timestamp));
+
+    const [a, b] = canonPair(personId, partnerRef.id);
+
+    tx.set(relRef, {
+      type: "PARTNER_OF",
+      fromPersonId: a,
+      toPersonId: b,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+
+    tx.update(personRef, {
+      updatedAt: timestamp,
+    });
+  });
+
+  return {
+    ok: true,
+    partnerId: partnerRef.id,
+    relationshipId: relRef.id,
+  };
+});
 
 export const addChildToUnion = onCall(async (request) => {
   const uid = assertAuth(request);
@@ -377,19 +509,7 @@ export const addChildToUnion = onCall(async (request) => {
   await db.runTransaction(async (tx) => {
     // Payload normalizado del nuevo hijo/a.
     // Evitamos guardar undefined en Firestore.
-    const childPayload = {
-      firstName: childData.firstName,
-      middleName: childData.middleName ?? "",
-      lastName: childData.lastName,
-      secondLastName: childData.secondLastName ?? "",
-      birthDate: childData.birthDate ?? "",
-      birthPlace: childData.birthPlace ?? "",
-      soltero: false,
-      ownerId: uid,
-      isRoot: false,
-      createdAt: timestamp,
-      updatedAt: timestamp,
-    };
+    const childPayload = normalizePersonPayload(childData, uid, timestamp);
 
     // Caso 1: hijo/a agregado a una unión de pareja.
     if (parsed.kind === "union") {
@@ -594,17 +714,8 @@ export const addParentToPerson = onCall(async (request) => {
     }
 
     tx.set(parentRef, {
-      firstName: parentData.firstName,
-      middleName: parentData.middleName ?? "",
-      lastName: parentData.lastName,
-      secondLastName: parentData.secondLastName ?? "",
-      birthDate: parentData.birthDate ?? "",
-      birthPlace: parentData.birthPlace ?? "",
+      ...normalizePersonPayload(parentData, uid, timestamp),
       soltero: parentData.soltero ?? false,
-      ownerId: uid,
-      isRoot: false,
-      createdAt: timestamp,
-      updatedAt: timestamp,
     });
 
     tx.set(relRef, {
