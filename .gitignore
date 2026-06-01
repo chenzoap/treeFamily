@@ -36,3 +36,8 @@ dist-ssr
 # Firebase emulator local exports/debug
 firebase-export-*/
 firestore-debug.log
+
+# Firebase emulator local exports/debug
+.firebase-seed/
+firebase-export-*/
+firestore-debug.log
