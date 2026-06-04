@@ -9,20 +9,17 @@
     "install:all": "npm install",
     "firebase:seed": "wait-on tcp:127.0.0.1:8080 && node scripts/seed-firestore.mjs",
     "validate:tree": "node scripts/validate-tree-data.mjs",
-
     "web:dev": "npm run dev -w packages/frontend",
-    
     "firebase:start": "firebase emulators:start --project tree-gen-chenzoap-2026 --config packages/firebase/firebase.json --only auth,firestore,functions --import=.firebase-seed --export-on-exit=.firebase-seed",
     "firebase:start:dev": "firebase emulators:start --project tree-gen-chenzoap-2026 --config packages/firebase/firebase.dev.json --only auth,firestore,functions --import=.firebase-seed --export-on-exit=.firebase-seed",
     "firebase:start:prod": "firebase emulators:start --project tree-gen-chenzoap-2026 --config packages/firebase/firebase.json --only auth,firestore,functions",
-
-    
     "dev": "concurrently -n \"WEB,FIREBASE,SEED\" -c \"cyan,yellow,green\" \"npm run web:dev\" \"npm run firebase:start:dev\" \"npm run firebase:seed\"",
     "test:unit": "npm run test -w packages/frontend",
     "test:e2e": "npx playwright test",
     "test": "npm run test:unit && npm run test:e2e"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "concurrently": "^9.2.1",
     "wait-on": "^9.0.3"
   },
