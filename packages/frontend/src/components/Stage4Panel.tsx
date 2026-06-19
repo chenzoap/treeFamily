@@ -194,46 +194,85 @@ function PersonFields({
   onChange: (next: PersonPayload) => void;
   nameLabel: string;
 }) {
+  const inputClass =
+    "w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm text-[#2B2B2B] outline-none transition placeholder:text-slate-400 focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15";
+
   return (
-    <div className="grid gap-2">
-      <input
-        className="p-2 border rounded-lg"
-        placeholder={`${nameLabel} *`}
-        value={value.firstName}
-        onChange={(e) => onChange({ ...value, firstName: e.target.value })}
-      />
-      <input
-        className="p-2 border rounded-lg"
-        placeholder="Segundo nombre"
-        value={value.middleName ?? ""}
-        onChange={(e) => onChange({ ...value, middleName: e.target.value })}
-      />
-      <input
-        className="p-2 border rounded-lg"
-        placeholder="Apellido *"
-        value={value.lastName}
-        onChange={(e) => onChange({ ...value, lastName: e.target.value })}
-      />
-      <input
-        className="p-2 border rounded-lg"
-        placeholder="Segundo apellido"
-        value={value.secondLastName ?? ""}
-        onChange={(e) => onChange({ ...value, secondLastName: e.target.value })}
-      />
-      <input
-        className="p-2 border rounded-lg"
-        type="date"
-        title="Fecha de nacimiento opcional"
-        value={value.birthDate ?? ""}
-        onChange={(e) => onChange({ ...value, birthDate: e.target.value })}
-      />
-      <input
-        className="p-2 border rounded-lg"
-        placeholder="Lugar de nacimiento (opcional)"
-        value={value.birthPlace ?? ""}
-        onChange={(e) => onChange({ ...value, birthPlace: e.target.value })}
-      />
-      <p className="text-xs text-slate-500">
+    <div className="space-y-3">
+      <div>
+        <label className="mb-1 block text-xs font-semibold text-slate-600">
+          {nameLabel}
+        </label>
+        <input
+          className={inputClass}
+          placeholder="Nombre *"
+          value={value.firstName}
+          onChange={(e) => onChange({ ...value, firstName: e.target.value })}
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-semibold text-slate-600">
+          Segundo nombre
+        </label>
+        <input
+          className={inputClass}
+          placeholder="Opcional"
+          value={value.middleName ?? ""}
+          onChange={(e) => onChange({ ...value, middleName: e.target.value })}
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-semibold text-slate-600">
+          Apellido
+        </label>
+        <input
+          className={inputClass}
+          placeholder="Apellido *"
+          value={value.lastName}
+          onChange={(e) => onChange({ ...value, lastName: e.target.value })}
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-semibold text-slate-600">
+          Segundo apellido
+        </label>
+        <input
+          className={inputClass}
+          placeholder="Opcional"
+          value={value.secondLastName ?? ""}
+          onChange={(e) => onChange({ ...value, secondLastName: e.target.value })}
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-semibold text-slate-600">
+          Fecha de nacimiento
+        </label>
+        <input
+          className={inputClass}
+          type="date"
+          title="Fecha de nacimiento opcional"
+          value={value.birthDate ?? ""}
+          onChange={(e) => onChange({ ...value, birthDate: e.target.value })}
+        />
+      </div>
+
+      <div>
+        <label className="mb-1 block text-xs font-semibold text-slate-600">
+          Lugar de nacimiento
+        </label>
+        <input
+          className={inputClass}
+          placeholder="Opcional"
+          value={value.birthPlace ?? ""}
+          onChange={(e) => onChange({ ...value, birthPlace: e.target.value })}
+        />
+      </div>
+
+      <p className="rounded-xl bg-[#F5EFE6] px-3 py-2 text-xs leading-5 text-slate-600">
         Para familiares, la fecha y el lugar de nacimiento son opcionales. Puedes completarlos después.
       </p>
     </div>
@@ -384,18 +423,16 @@ export default function Stage4Panel() {
   };
 
   return (
-    <div className="p-4 border rounded-2xl bg-white shadow-sm space-y-4">
-      <div>
-        <p className="text-xs font-semibold uppercase tracking-wide text-blue-700">Construye tu árbol</p>
-        <h2 className="text-xl font-bold text-slate-900">Acciones rápidas</h2>
-        <p className="text-sm text-slate-600 mt-1">Agrega familiares cercanos sin manejar datos técnicos.</p>
-      </div>
-
-      <div className="p-3 border rounded-xl bg-slate-50 space-y-2">
-        <label className="text-sm font-medium text-slate-700">
+    <div className="space-y-5">
+      <section className="rounded-2xl bg-[#F5EFE6] p-4">
+        <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#2F5D50]">
           Persona seleccionada
+        </p>
+
+        <label className="mt-2 block">
+          <span className="sr-only">Selecciona una persona</span>
           <select
-            className="mt-1 w-full p-2 border rounded-lg bg-white"
+            className="w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm font-semibold text-[#2B2B2B] outline-none transition focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15"
             value={activePersonId ?? ""}
             onChange={(e) => setSelectedPersonId(e.target.value || null)}
           >
@@ -407,36 +444,49 @@ export default function Stage4Panel() {
             ))}
           </select>
         </label>
-        <p className="text-xs text-slate-500">Las acciones se aplicarán sobre: <b>{activeName}</b></p>
-      </div>
+
+        <p className="mt-2 text-xs leading-5 text-slate-600">
+          Las siguientes acciones se aplicarán sobre{" "}
+          <strong className="text-[#2F5D50]">{activeName}</strong>.
+        </p>
+      </section>
 
       {notice && (
-        <div className={`p-3 border rounded-lg text-sm ${noticeClasses(notice.kind)}`}>
+        <div
+          className={`rounded-xl border px-3 py-3 text-sm leading-5 ${noticeClasses(notice.kind)}`}
+          role="status"
+        >
           {notice.message}
         </div>
       )}
 
       {parentPairSuggestion && (
-        <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900 space-y-3">
+        <div className="space-y-3 rounded-2xl border border-[#D8A94F]/40 bg-[#FFF8E7] p-4 text-sm text-[#5B4A20]">
           <div>
-            <p className="font-bold">Ya agregaste padre y madre para {parentPairSuggestion.childName}.</p>
-            <p className="mt-1">
-              ¿Quieres conectar a {parentPairSuggestion.fatherName} y {parentPairSuggestion.motherName} como pareja para que el árbol se vea más completo?
+            <p className="font-bold">
+              Ya agregaste padre y madre para {parentPairSuggestion.childName}.
             </p>
-            <p className="mt-1 text-xs text-blue-800">Puedes cambiar esto después.</p>
+            <p className="mt-1 leading-5">
+              ¿Quieres conectar a {parentPairSuggestion.fatherName} y{" "}
+              {parentPairSuggestion.motherName} como pareja para que el árbol se
+              vea más completo?
+            </p>
+            <p className="mt-1 text-xs">Puedes cambiar esto después.</p>
           </div>
+
           <div className="grid grid-cols-2 gap-2">
             <button
               type="button"
-              className="rounded-lg bg-blue-600 px-3 py-2 font-bold text-white disabled:opacity-50"
+              className="rounded-xl bg-[#2F5D50] px-3 py-2.5 font-bold text-white transition hover:bg-[#274D43] disabled:cursor-not-allowed disabled:opacity-50"
               disabled={saving}
               onClick={connectSuggestedParents}
             >
               Conectarlos
             </button>
+
             <button
               type="button"
-              className="rounded-lg border border-blue-300 bg-white px-3 py-2 font-bold text-blue-900"
+              className="rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 font-bold text-slate-700 transition hover:bg-white"
               onClick={() => setParentPairSuggestion(null)}
             >
               No por ahora
@@ -445,61 +495,118 @@ export default function Stage4Panel() {
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2">
-        <button className={`p-2 rounded-lg border font-semibold ${action === "father" ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => setAction("father")}>
-          Agregar padre
-        </button>
-        <button className={`p-2 rounded-lg border font-semibold ${action === "mother" ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => setAction("mother")}>
-          Agregar madre
-        </button>
-        <button className={`p-2 rounded-lg border font-semibold ${action === "partner" ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => setAction("partner")}>
-          Agregar pareja
-        </button>
-        <button className={`p-2 rounded-lg border font-semibold ${action === "child" ? "bg-slate-900 text-white" : "bg-white"}`} onClick={() => setAction("child")}>
-          Agregar hijo/a
-        </button>
-      </div>
+      <section>
+        <div className="mb-3">
+          <p className="text-sm font-bold text-[#2B2B2B]">
+            ¿Qué familiar quieres agregar?
+          </p>
+          <p className="mt-1 text-xs text-slate-500">
+            Elige una relación para mostrar el formulario correspondiente.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          {(
+            [
+              ["father", "Agregar padre"],
+              ["mother", "Agregar madre"],
+              ["partner", "Agregar pareja"],
+              ["child", "Agregar hijo/a"],
+            ] as Array<[QuickAction, string]>
+          ).map(([value, label]) => {
+            const isActive = action === value;
+
+            return (
+              <button
+                key={value}
+                type="button"
+                aria-pressed={isActive}
+                className={`rounded-xl border px-3 py-2.5 text-sm font-semibold transition ${
+                  isActive
+                    ? "border-[#2F5D50] bg-[#2F5D50] text-white shadow-sm"
+                    : "border-[#D8D0C4] bg-[#FFFCF7] text-slate-700 hover:border-[#2F5D50]/50 hover:bg-white"
+                }`}
+                onClick={() => setAction(value)}
+              >
+                {label}
+              </button>
+            );
+          })}
+        </div>
+      </section>
 
       {!activePersonId && (
-        <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+        <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           Selecciona una persona para agregar familiares.
         </div>
       )}
 
       {(action === "father" || action === "mother") && (
-        <section className="space-y-3">
+        <section className="space-y-4 border-t border-[#E5DED4] pt-5">
           <div>
-            <h3 className="font-bold text-slate-900">{action === "father" ? "Agregar padre" : "Agregar madre"}</h3>
-            <p className="text-sm text-slate-600">Se conectará como {action === "father" ? "padre" : "madre"} de {activeName}.</p>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C97C5D]">
+              Nueva relación
+            </p>
+            <h3 className="mt-1 text-lg font-bold text-[#2B2B2B]">
+              {action === "father" ? "Agregar padre" : "Agregar madre"}
+            </h3>
+            <p className="mt-1 text-sm leading-5 text-slate-600">
+              Se conectará como {action === "father" ? "padre" : "madre"} de{" "}
+              <strong>{activeName}</strong>.
+            </p>
           </div>
 
           <PersonFields
             value={parentData}
-            onChange={(next) => setParentData({ ...next, soltero: parentData.soltero })}
-            nameLabel={action === "father" ? "Nombre del padre" : "Nombre de la madre"}
+            onChange={(next) =>
+              setParentData({ ...next, soltero: parentData.soltero })
+            }
+            nameLabel={
+              action === "father" ? "Nombre del padre" : "Nombre de la madre"
+            }
           />
 
           <button
-            className="w-full p-2 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-50"
+            type="button"
+            className="w-full rounded-xl bg-[#2F5D50] px-4 py-3 font-bold text-white shadow-sm transition hover:bg-[#274D43] disabled:cursor-not-allowed disabled:opacity-50"
             disabled={saving || !canSaveParent}
-            onClick={() => saveParent(action === "father" ? "father" : "mother")}
+            onClick={() =>
+              saveParent(action === "father" ? "father" : "mother")
+            }
           >
-            {saving ? "Guardando..." : action === "father" ? "Guardar padre" : "Guardar madre"}
+            {saving
+              ? "Guardando..."
+              : action === "father"
+                ? "Guardar padre"
+                : "Guardar madre"}
           </button>
         </section>
       )}
 
       {action === "partner" && (
-        <section className="space-y-3">
+        <section className="space-y-4 border-t border-[#E5DED4] pt-5">
           <div>
-            <h3 className="font-bold text-slate-900">Agregar pareja</h3>
-            <p className="text-sm text-slate-600">Crearemos la persona y la conectaremos como pareja de {activeName}.</p>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C97C5D]">
+              Nueva relación
+            </p>
+            <h3 className="mt-1 text-lg font-bold text-[#2B2B2B]">
+              Agregar pareja
+            </h3>
+            <p className="mt-1 text-sm leading-5 text-slate-600">
+              Crearemos la persona y la conectaremos como pareja de{" "}
+              <strong>{activeName}</strong>.
+            </p>
           </div>
 
-          <PersonFields value={partnerData} onChange={setPartnerData} nameLabel="Nombre de la pareja" />
+          <PersonFields
+            value={partnerData}
+            onChange={setPartnerData}
+            nameLabel="Nombre de la pareja"
+          />
 
           <button
-            className="w-full p-2 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-50"
+            type="button"
+            className="w-full rounded-xl bg-[#2F5D50] px-4 py-3 font-bold text-white shadow-sm transition hover:bg-[#274D43] disabled:cursor-not-allowed disabled:opacity-50"
             disabled={saving || !canSavePartner}
             onClick={savePartner}
           >
@@ -509,16 +616,24 @@ export default function Stage4Panel() {
       )}
 
       {action === "child" && (
-        <section className="space-y-3">
+        <section className="space-y-4 border-t border-[#E5DED4] pt-5">
           <div>
-            <h3 className="font-bold text-slate-900">Agregar hijo/a</h3>
-            <p className="text-sm text-slate-600">Puedes conectarlo con una pareja o solo como hijo/a de {activeName}.</p>
+            <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C97C5D]">
+              Nueva relación
+            </p>
+            <h3 className="mt-1 text-lg font-bold text-[#2B2B2B]">
+              Agregar hijo/a
+            </h3>
+            <p className="mt-1 text-sm leading-5 text-slate-600">
+              Puedes conectarlo con una pareja o solo como hijo/a de{" "}
+              <strong>{activeName}</strong>.
+            </p>
           </div>
 
-          <label className="text-sm font-medium text-slate-700 block">
+          <label className="block text-xs font-semibold text-slate-600">
             Conexión familiar
             <select
-              className="mt-1 w-full p-2 border rounded-lg bg-white"
+              className="mt-1 w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm text-[#2B2B2B] outline-none transition focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15"
               value={selectedUnionId}
               onChange={(e) => setSelectedUnionId(e.target.value)}
             >
@@ -530,10 +645,15 @@ export default function Stage4Panel() {
             </select>
           </label>
 
-          <PersonFields value={childData} onChange={setChildData} nameLabel="Nombre del hijo/a" />
+          <PersonFields
+            value={childData}
+            onChange={setChildData}
+            nameLabel="Nombre del hijo/a"
+          />
 
           <button
-            className="w-full p-2 rounded-lg bg-blue-600 text-white font-bold disabled:opacity-50"
+            type="button"
+            className="w-full rounded-xl bg-[#2F5D50] px-4 py-3 font-bold text-white shadow-sm transition hover:bg-[#274D43] disabled:cursor-not-allowed disabled:opacity-50"
             disabled={saving || !canSaveChild}
             onClick={saveChild}
           >

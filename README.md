@@ -453,7 +453,13 @@ Documentos relevantes:
 04_deuda_tecnica_actual.md
 05_flujo_mvp_v1.md
 06_especificacion_etapa_7.md
+07_direccion_visual_y_roadmap_ux.md
 ```
+
+Descripción:
+
+- `docs/product/06_especificacion_etapa_7.md` — Alcance funcional, historias de usuario, reglas de producto, QA y Definition of Done de Etapa 7.
+- `docs/product/07_direccion_visual_y_roadmap_ux.md` — Dirección visual oficial, mockups de referencia, sistema de colores y evolución UX distribuida por etapas.
 
 Documentación QA:
 
@@ -482,6 +488,29 @@ Documentos relevantes:
 02_mapa_archivos_actuales.md
 03_funciones_backend_actuales.md
 ```
+
+---
+
+## Dirección visual oficial
+
+La dirección visual del producto queda consolidada en:
+
+```txt
+docs/product/07_direccion_visual_y_roadmap_ux.md
+```
+
+Este documento define:
+
+- Los mockups aprobados como referencia del producto.
+- El sistema visual y la paleta inicial.
+- Las reglas para fondos, superficies, bordes, sombras, nodos e inputs.
+- Qué elementos visuales se implementan en Etapa 7.
+- Qué funcionalidades pasan a Etapa 7.1, Etapa 7.2 y etapas posteriores.
+- La evolución planificada para edición avanzada, fotos, colaboración, mobile, exportación e IA.
+
+Regla de implementación:
+
+> Los mockups representan la dirección objetivo del producto, pero cada elemento debe incorporarse en la etapa correspondiente sin ampliar innecesariamente el alcance del MVP.
 
 ---
 

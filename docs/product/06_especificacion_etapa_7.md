@@ -925,6 +925,7 @@ Tareas posibles:
 | DOC-7-03 | Actualizar estado actual del proyecto.                       | Alta      |
 | DOC-7-04 | Documentar que Etapa 7.1 y 7.2 vienen después.               | Alta      |
 | DOC-7-05 | Documentar que fotos pertenecen a Etapa 9.                   | Alta      |
+| DOC-7-06 | Crear y mantener `docs/product/07_direccion_visual_y_roadmap_ux.md`. | Alta      |
 
 ---
 
@@ -1122,6 +1123,7 @@ La Etapa 7 se puede cerrar cuando:
 * [ ] El árbol carga centrado o razonablemente visible.
 * [ ] README queda actualizado al estado real.
 * [ ] Se documenta que Etapa 7.1 y 7.2 vienen después.
+* [ ] La dirección visual y el roadmap UX están consolidados en `07_direccion_visual_y_roadmap_ux.md`.
 * [ ] Build frontend pasa.
 * [ ] Build functions pasa.
 * [ ] Tests E2E locales existentes siguen pasando o se actualizan correctamente.
@@ -1282,6 +1284,28 @@ Recomendación PM/PO inicial:
 * Botón “Centrar árbol”: útil, pero no obligatorio.
 * Centrado inicial: selectedPerson si existe; si no, root.
 * Nombres largos: máximo dos líneas o ellipsis controlado.
+
+---
+
+# 22.1 Documento complementario de diseño
+
+La dirección visual oficial, los mockups aprobados, el sistema de color y la distribución de funcionalidades visuales entre Etapa 7 y etapas futuras se encuentran en:
+
+```txt
+docs/product/07_direccion_visual_y_roadmap_ux.md
+```
+
+Este documento debe consultarse antes de:
+
+- Modificar la identidad visual.
+- Cambiar el layout principal de `/tree`.
+- Rediseñar nodos, conectores, formularios o paneles.
+- Incorporar componentes inspirados en los mockups.
+- Decidir si una función visual pertenece a Etapa 7, 7.1, 7.2 o a una etapa posterior.
+
+Regla de consistencia:
+
+> La especificación funcional define qué debe hacer Etapa 7; el documento de dirección visual define cómo debe sentirse, verse y evolucionar la experiencia.
 
 ---
 

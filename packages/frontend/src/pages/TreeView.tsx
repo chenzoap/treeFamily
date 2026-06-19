@@ -5,33 +5,63 @@ import { buildAncestry, buildDescendants } from "../graph/layout";
 import { renderFullTree } from "../visualization/renderTree";
 
 const TreeView = () => {
+  const containerRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+
   const { persons, relationships, rootPersonId, selectedPersonId } = useTreeStore();
 
   useEffect(() => {
     const focusPersonId = selectedPersonId ?? rootPersonId;
 
-    if (!svgRef.current || persons.length === 0 || !focusPersonId) return;
+    if (!containerRef.current || !svgRef.current || persons.length === 0 || !focusPersonId) {
+      return;
+    }
 
-    const unions = buildUnions(persons, relationships);
+    const render = () => {
+      if (!containerRef.current || !svgRef.current) return;
 
-    const ancestors = buildAncestry(focusPersonId, persons, unions);
-    const descendants = buildDescendants(focusPersonId, persons, unions);
+      const containerRect = containerRef.current.getBoundingClientRect();
+      const containerWidth = containerRect.width;
+      const containerHeight = containerRect.height;
 
-    // PASAMOS 'persons' como cuarto argumento para buscar datos de la pareja
-    renderFullTree(
-    svgRef.current,
-    ancestors,
-    descendants,
-    window.innerWidth,
-    persons,
-    unions
-  );
-}, [persons, relationships, rootPersonId, selectedPersonId]);
+      const unions = buildUnions(persons, relationships);
+      const ancestors = buildAncestry(focusPersonId, persons, unions);
+      const descendants = buildDescendants(focusPersonId, persons, unions);
+
+      renderFullTree(
+        svgRef.current,
+        ancestors,
+        descendants,
+        containerWidth,
+        containerHeight,
+        persons,
+        unions
+      );
+    };
+
+    render();
+
+    const resizeObserver = new ResizeObserver(() => {
+      render();
+    });
+
+    resizeObserver.observe(containerRef.current);
+
+    return () => {
+      resizeObserver.disconnect();
+    };
+  }, [persons, relationships, rootPersonId, selectedPersonId]);
 
   return (
-    <div className="w-full h-full bg-slate-50 relative">
-      <svg ref={svgRef} className="w-full h-full cursor-move" />
+    <div
+      ref={containerRef}
+      className="relative h-full w-full overflow-hidden rounded-2xl border border-slate-200 bg-slate-50"
+    >
+      <div className="pointer-events-none absolute left-4 top-4 z-10 rounded-full border border-slate-200 bg-white/90 px-3 py-1 text-xs font-semibold text-slate-600 shadow-sm">
+        Usa el mouse para mover o acercar el árbol
+      </div>
+
+      <svg ref={svgRef} className="h-full w-full cursor-move" />
     </div>
   );
 };

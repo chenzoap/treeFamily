@@ -21,6 +21,7 @@ export const renderFullTree = (
   ancestorsData: TreeNode | null,
   descendantsData: TreeNode | null,
   width: number,
+  height: number,
   allPersons: Person[],
   allUnions: Union[]
 ) => {
@@ -342,8 +343,11 @@ export const renderFullTree = (
     });
   }
 
+  const initialX = width / 2;
+  const initialY = height / 2;
+
   svg.call(
     zoom.transform,
-    d3.zoomIdentity.translate(width / 2, 100).scale(0.8)
+    d3.zoomIdentity.translate(initialX, initialY).scale(0.8)
   );
 };
