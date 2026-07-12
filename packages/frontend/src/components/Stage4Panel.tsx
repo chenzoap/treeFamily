@@ -26,7 +26,15 @@ type PersonLite = {
 };
 
 type UnionLite = { id: string };
+type ExistingChildOption = {
+  id: string;
+  name: string;
+  eligible: boolean;
+  reason?: string;
+};
 type QuickAction = "father" | "mother" | "partner" | "child";
+type PartnerMode = "new" | "existing";
+type PartnerRelationshipStatus = "current" | "former" | "unknown";
 
 type ParentPairSuggestion = {
   childId: string;
@@ -71,6 +79,14 @@ function personLabel(p: PersonLite): string {
     .trim();
 }
 
+function partnerStatusLabel(
+  status: PartnerRelationshipStatus
+): string {
+  if (status === "current") return "Pareja actual";
+  if (status === "former") return "Expareja";
+  return "Relación de pareja sin especificar";
+}
+
 function findPersonById(persons: PersonLite[], id: string): PersonLite | null {
   return persons.find((x) => x.id === id) ?? null;
 }
@@ -89,6 +105,83 @@ function hasPartnerRelationship(relationships: Array<{ fromPersonId: string; toP
     const reverse = relationship.fromPersonId === b && relationship.toPersonId === a;
     return forward || reverse;
   });
+}
+
+function buildExistingChildOptions({
+  activePersonId,
+  targetPartnerId,
+  persons,
+  relationships,
+}: {
+  activePersonId: string;
+  targetPartnerId: string | null;
+  persons: PersonLite[];
+  relationships: Array<{
+    fromPersonId: string;
+    toPersonId: string;
+    type: string;
+  }>;
+}): ExistingChildOption[] {
+  const childIds = Array.from(
+    new Set(
+      relationships
+        .filter(
+          (relationship) =>
+            relationship.type === "PARENT_OF" &&
+            relationship.fromPersonId === activePersonId
+        )
+        .map((relationship) => relationship.toPersonId)
+    )
+  );
+
+  return childIds
+    .map((childId): ExistingChildOption | null => {
+      const childName = findPersonName(persons, childId);
+      if (!childName) return null;
+
+      const parentIds = Array.from(
+        new Set(
+          relationships
+            .filter(
+              (relationship) =>
+                relationship.type === "PARENT_OF" &&
+                relationship.toPersonId === childId
+            )
+            .map((relationship) => relationship.fromPersonId)
+        )
+      );
+
+      if (targetPartnerId && parentIds.includes(targetPartnerId)) {
+        return {
+          id: childId,
+          name: childName,
+          eligible: false,
+          reason: "Ya está vinculado/a con esta persona.",
+        };
+      }
+
+      const otherParentIds = parentIds.filter(
+        (parentId) => parentId !== activePersonId
+      );
+
+      if (otherParentIds.length > 0) {
+        return {
+          id: childId,
+          name: childName,
+          eligible: false,
+          reason:
+            "Ya tiene otro progenitor registrado. Cambiar esta filiación pertenece a Etapa 8.",
+        };
+      }
+
+      return {
+        id: childId,
+        name: childName,
+        eligible: true,
+      };
+    })
+    .filter((option): option is ExistingChildOption => Boolean(option))
+    .sort((left, right) => left.name.localeCompare(right.name, "es"));
 }
 
 function findParentPairSuggestionForChild({
@@ -183,6 +276,80 @@ function buildChildUnionOptionsForPerson(activePersonId: string, unions: UnionLi
     if (aIsSingle !== bIsSingle) return aIsSingle ? 1 : -1;
     return a.id.localeCompare(b.id);
   });
+}
+
+function ExistingChildrenSelector({
+  options,
+  selectedIds,
+  onToggle,
+  activeName,
+  targetName,
+}: {
+  options: ExistingChildOption[];
+  selectedIds: string[];
+  onToggle: (childId: string) => void;
+  activeName: string;
+  targetName: string;
+}) {
+  if (options.length === 0) return null;
+
+  const eligibleOptions = options.filter((option) => option.eligible);
+  const unavailableOptions = options.filter((option) => !option.eligible);
+
+  return (
+    <section className="space-y-3 rounded-2xl border border-[#D8A94F]/35 bg-[#FFF8E7] p-4">
+      <div>
+        <p className="text-sm font-bold text-[#2B2B2B]">
+          ¿{targetName} también es progenitor/a de algún hijo existente?
+        </p>
+        <p className="mt-1 text-xs leading-5 text-[#5B4A20]">
+          Selecciona únicamente los hijos de <strong>{activeName}</strong> que
+          también correspondan a esta relación. No se asignará ninguno de forma
+          automática.
+        </p>
+      </div>
+
+      {eligibleOptions.length > 0 ? (
+        <div className="space-y-2">
+          {eligibleOptions.map((option) => {
+            const checked = selectedIds.includes(option.id);
+
+            return (
+              <label
+                key={option.id}
+                className="flex cursor-pointer items-center gap-3 rounded-xl border border-[#E5DED4] bg-[#FFFCF7] px-3 py-2.5 text-sm text-[#2B2B2B]"
+              >
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 accent-[#2F5D50]"
+                  checked={checked}
+                  onChange={() => onToggle(option.id)}
+                />
+                <span className="font-semibold">{option.name}</span>
+              </label>
+            );
+          })}
+        </div>
+      ) : (
+        <p className="rounded-xl bg-[#FFFCF7] px-3 py-2 text-xs leading-5 text-slate-600">
+          No hay hijos disponibles para vincular en esta operación.
+        </p>
+      )}
+
+      {unavailableOptions.length > 0 && (
+        <div className="space-y-1 border-t border-[#E5DED4] pt-3">
+          <p className="text-xs font-bold text-slate-600">
+            No disponibles en este paso
+          </p>
+          {unavailableOptions.map((option) => (
+            <p key={option.id} className="text-xs leading-5 text-slate-500">
+              <strong>{option.name}:</strong> {option.reason}
+            </p>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function PersonFields({
@@ -291,9 +458,14 @@ export default function Stage4Panel() {
   const [notice, setNotice] = useState<UiNotice>(null);
 
   const [partnerData, setPartnerData] = useState<PersonPayload>({ ...emptyPerson });
+  const [partnerMode, setPartnerMode] = useState<PartnerMode>("new");
+  const [existingPartnerId, setExistingPartnerId] = useState("");
+  const [partnerRelationshipStatus, setPartnerRelationshipStatus] =
+    useState<PartnerRelationshipStatus>("unknown");
   const [childData, setChildData] = useState<PersonPayload>({ ...emptyPerson });
   const [parentData, setParentData] = useState<ParentPayload>({ ...emptyParent });
   const [selectedUnionId, setSelectedUnionId] = useState("");
+  const [selectedExistingChildIds, setSelectedExistingChildIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [parentPairSuggestion, setParentPairSuggestion] = useState<ParentPairSuggestion | null>(null);
 
@@ -307,10 +479,67 @@ export default function Stage4Panel() {
     return buildChildUnionOptionsForPerson(activePersonId, unions);
   }, [activePersonId, unions]);
 
+  const existingPartnerCandidates = useMemo(() => {
+    if (!activePersonId) return [];
+
+    return persons
+      .filter((person) => {
+        if (person.id === activePersonId) return false;
+
+        return !hasPartnerRelationship(
+          relationships,
+          activePersonId,
+          person.id
+        );
+      })
+      .sort((left, right) =>
+        personLabel(left).localeCompare(personLabel(right), "es")
+      );
+  }, [activePersonId, persons, relationships]);
+
+  const existingPartnerName = useMemo(() => {
+    if (!existingPartnerId) return null;
+    return findPersonName(persons, existingPartnerId);
+  }, [existingPartnerId, persons]);
+
+  const existingChildOptions = useMemo(() => {
+    if (!activePersonId) return [];
+    if (partnerMode === "existing" && !existingPartnerId) return [];
+
+    return buildExistingChildOptions({
+      activePersonId,
+      targetPartnerId:
+        partnerMode === "existing" ? existingPartnerId : null,
+      persons,
+      relationships,
+    });
+  }, [
+    activePersonId,
+    existingPartnerId,
+    partnerMode,
+    persons,
+    relationships,
+  ]);
+
+  const toggleExistingChild = (childId: string) => {
+    setSelectedExistingChildIds((current) =>
+      current.includes(childId)
+        ? current.filter((id) => id !== childId)
+        : [...current, childId]
+    );
+  };
+
   useEffect(() => {
     setNotice(null);
     setParentPairSuggestion(null);
+    setExistingPartnerId("");
+    setPartnerRelationshipStatus("unknown");
+    setSelectedExistingChildIds([]);
   }, [action, activePersonId]);
+
+  useEffect(() => {
+    setSelectedExistingChildIds([]);
+  }, [partnerMode, existingPartnerId]);
 
   useEffect(() => {
     if (!activePersonId) return;
@@ -333,6 +562,10 @@ export default function Stage4Panel() {
   if (!treeId) return null;
 
   const canSavePartner = !!activePersonId && isPersonPayloadReady(partnerData);
+  const canLinkExistingPartner =
+    !!activePersonId &&
+    !!existingPartnerId &&
+    existingPartnerId !== activePersonId;
   const canSaveChild = !!activePersonId && !!selectedUnionId && isPersonPayloadReady(childData);
   const canSaveParent = !!activePersonId && isPersonPayloadReady(parentData);
 
@@ -376,6 +609,7 @@ export default function Stage4Panel() {
         treeId,
         personAId: parentPairSuggestion.fatherId,
         personBId: parentPairSuggestion.motherId,
+        relationshipStatus: "unknown",
       });
 
       setNotice({
@@ -396,11 +630,77 @@ export default function Stage4Panel() {
     try {
       setSaving(true);
       setNotice(null);
-      await addPartnerToPersonFn({ treeId, personId: activePersonId, partnerData });
-      setNotice({ kind: "success", message: "Pareja agregada al árbol." });
+      const result = await addPartnerToPersonFn({
+        treeId,
+        personId: activePersonId,
+        partnerData,
+        relationshipStatus: partnerRelationshipStatus,
+        existingChildIds: selectedExistingChildIds,
+      });
+      const response = result.data as { linkedChildIds?: string[] };
+      const linkedCount = response.linkedChildIds?.length ?? 0;
+
+      setNotice({
+        kind: "success",
+        message: `${partnerStatusLabel(partnerRelationshipStatus)} agregada al árbol.${
+          linkedCount > 0
+            ? ` También se vinculó como progenitor/a de ${linkedCount} hijo${linkedCount === 1 ? "" : "s"} existente${linkedCount === 1 ? "" : "s"}.`
+            : ""
+        }`,
+      });
       setPartnerData({ ...emptyPerson });
+      setSelectedExistingChildIds([]);
     } catch (err: unknown) {
       setNotice({ kind: "error", message: extractFirebaseCallableErrorMessage(err) });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const linkExistingPartner = async () => {
+    if (!activePersonId || !existingPartnerId) return;
+
+    try {
+      setSaving(true);
+      setNotice(null);
+
+      const result = await createUnionFn({
+        treeId,
+        personAId: activePersonId,
+        personBId: existingPartnerId,
+        relationshipStatus: partnerRelationshipStatus,
+        childrenOwnerId: activePersonId,
+        existingChildIds: selectedExistingChildIds,
+      });
+
+      const response = result.data as {
+        alreadyExisted?: boolean;
+        linkedChildIds?: string[];
+      };
+      const linkedCount = response.linkedChildIds?.length ?? 0;
+
+      setNotice({
+        kind: response.alreadyExisted ? "info" : "success",
+        message: `${
+          response.alreadyExisted
+            ? "Estas personas ya estaban relacionadas como pareja."
+            : `${activeName} y ${
+                existingPartnerName ?? "la persona seleccionada"
+              } ahora tienen una relación de pareja.`
+        }${
+          linkedCount > 0
+            ? ` También se vinculó a la nueva pareja como progenitor/a de ${linkedCount} hijo${linkedCount === 1 ? "" : "s"} existente${linkedCount === 1 ? "" : "s"}.`
+            : ""
+        }`,
+      });
+
+      setExistingPartnerId("");
+      setSelectedExistingChildIds([]);
+    } catch (err: unknown) {
+      setNotice({
+        kind: "error",
+        message: extractFirebaseCallableErrorMessage(err),
+      });
     } finally {
       setSaving(false);
     }
@@ -587,31 +887,134 @@ export default function Stage4Panel() {
         <section className="space-y-4 border-t border-[#E5DED4] pt-5">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C97C5D]">
-              Nueva relación
+              Relación de pareja
             </p>
             <h3 className="mt-1 text-lg font-bold text-[#2B2B2B]">
-              Agregar pareja
+              Agregar o relacionar pareja
             </h3>
             <p className="mt-1 text-sm leading-5 text-slate-600">
-              Crearemos la persona y la conectaremos como pareja de{" "}
-              <strong>{activeName}</strong>.
+              Puedes crear una persona nueva o relacionar a{" "}
+              <strong>{activeName}</strong> con alguien que ya existe en el árbol.
             </p>
           </div>
 
-          <PersonFields
-            value={partnerData}
-            onChange={setPartnerData}
-            nameLabel="Nombre de la pareja"
-          />
+          <div className="grid grid-cols-2 gap-2 rounded-xl bg-[#F5EFE6] p-1">
+            <button
+              type="button"
+              aria-pressed={partnerMode === "new"}
+              className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${
+                partnerMode === "new"
+                  ? "bg-white text-[#2F5D50] shadow-sm"
+                  : "text-slate-600 hover:text-[#2B2B2B]"
+              }`}
+              onClick={() => setPartnerMode("new")}
+            >
+              Crear persona
+            </button>
 
-          <button
-            type="button"
-            className="w-full rounded-xl bg-[#2F5D50] px-4 py-3 font-bold text-white shadow-sm transition hover:bg-[#274D43] disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={saving || !canSavePartner}
-            onClick={savePartner}
-          >
-            {saving ? "Guardando..." : "Guardar pareja"}
-          </button>
+            <button
+              type="button"
+              aria-pressed={partnerMode === "existing"}
+              className={`rounded-lg px-3 py-2 text-sm font-semibold transition ${
+                partnerMode === "existing"
+                  ? "bg-white text-[#2F5D50] shadow-sm"
+                  : "text-slate-600 hover:text-[#2B2B2B]"
+              }`}
+              onClick={() => setPartnerMode("existing")}
+            >
+              Usar existente
+            </button>
+          </div>
+
+          <label className="block text-xs font-semibold text-slate-600">
+            Estado de la relación
+            <select
+              className="mt-1 w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm text-[#2B2B2B] outline-none transition focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15"
+              value={partnerRelationshipStatus}
+              onChange={(event) =>
+                setPartnerRelationshipStatus(
+                  event.target.value as PartnerRelationshipStatus
+                )
+              }
+            >
+              <option value="current">Pareja actual</option>
+              <option value="former">Expareja</option>
+              <option value="unknown">Sin especificar</option>
+            </select>
+          </label>
+
+          {partnerMode === "new" ? (
+            <>
+              <PersonFields
+                value={partnerData}
+                onChange={setPartnerData}
+                nameLabel="Nombre de la pareja"
+              />
+
+              <ExistingChildrenSelector
+                options={existingChildOptions}
+                selectedIds={selectedExistingChildIds}
+                onToggle={toggleExistingChild}
+                activeName={activeName}
+                targetName="La nueva pareja"
+              />
+
+              <button
+                type="button"
+                className="w-full rounded-xl bg-[#2F5D50] px-4 py-3 font-bold text-white shadow-sm transition hover:bg-[#274D43] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={saving || !canSavePartner}
+                onClick={savePartner}
+              >
+                {saving ? "Guardando..." : "Crear y relacionar pareja"}
+              </button>
+            </>
+          ) : (
+            <>
+              <label className="block text-xs font-semibold text-slate-600">
+                Persona existente
+                <select
+                  className="mt-1 w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm text-[#2B2B2B] outline-none transition focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15"
+                  value={existingPartnerId}
+                  onChange={(event) =>
+                    setExistingPartnerId(event.target.value)
+                  }
+                >
+                  <option value="">Selecciona una persona</option>
+                  {existingPartnerCandidates.map((person) => (
+                    <option key={person.id} value={person.id}>
+                      {personLabel(person)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {existingPartnerCandidates.length === 0 && (
+                <p className="rounded-xl bg-[#F5EFE6] px-3 py-2 text-xs leading-5 text-slate-600">
+                  No hay otras personas disponibles para crear una nueva relación
+                  de pareja con {activeName}.
+                </p>
+              )}
+
+              {existingPartnerId && (
+                <ExistingChildrenSelector
+                  options={existingChildOptions}
+                  selectedIds={selectedExistingChildIds}
+                  onToggle={toggleExistingChild}
+                  activeName={activeName}
+                  targetName={existingPartnerName ?? "La persona seleccionada"}
+                />
+              )}
+
+              <button
+                type="button"
+                className="w-full rounded-xl bg-[#2F5D50] px-4 py-3 font-bold text-white shadow-sm transition hover:bg-[#274D43] disabled:cursor-not-allowed disabled:opacity-50"
+                disabled={saving || !canLinkExistingPartner}
+                onClick={linkExistingPartner}
+              >
+                {saving ? "Relacionando..." : "Relacionar personas"}
+              </button>
+            </>
+          )}
         </section>
       )}
 

@@ -42,11 +42,13 @@ async function addParent(
 ) {
   const actionButtonName = role === "padre" ? "Agregar padre" : "Agregar madre";
   const saveButtonName = role === "padre" ? "Guardar padre" : "Guardar madre";
-  const firstNamePlaceholder = role === "padre" ? "Nombre del padre *" : "Nombre de la madre *";
-
   await page.getByRole("button", { name: actionButtonName }).click();
-  await page.getByPlaceholder(firstNamePlaceholder).fill(firstName);
-  await page.getByPlaceholder("Apellido *").fill(lastName);
+  await page
+    .getByRole("textbox", { name: /^Nombre \*$/i })
+    .fill(firstName);
+  await page
+    .getByRole("textbox", { name: /^Apellido \*$/i })
+    .fill(lastName);
   await page.getByRole("button", { name: saveButtonName }).click();
 
   const successMessage = role === "padre" ? "Padre agregado al árbol." : "Madre agregada al árbol.";
@@ -60,7 +62,19 @@ test.describe("MVP onboarding flow", () => {
     await signup(page, email);
     await createProfile(page);
 
-    await expect(page.getByText(/Tu árbol empezó contigo/i).first()).toBeVisible();
+    const initialTreeState = page.getByRole("region", {
+      name: /Tu historia familiar empieza aquí/i,
+    });
+
+    await expect(initialTreeState).toBeVisible();
+    await expect(initialTreeState).toContainText(
+      "Comenzando contigo, Belgica Aragon."
+    );
+    await expect(
+      page.getByRole("progressbar", {
+        name: "Progreso del árbol inicial",
+      })
+    ).toHaveAttribute("aria-valuenow", "0");
 
     await addParent(page, "padre", "Fernando", "Aragon");
     await addParent(page, "madre", "Palomino", "Salazar");
@@ -80,7 +94,13 @@ test.describe("MVP onboarding flow", () => {
 
     await expect(page.getByRole("heading", { name: /Mi árbol familiar/i })).toBeVisible();
     await expect(page.getByText("Persona no encontrada")).toHaveCount(0);
-    await expect(page.getByLabel("Persona seleccionada")).toContainText(/Belgica Aragon/i);
+    const selectedPerson = page.getByRole("combobox", {
+      name: "Selecciona una persona",
+    });
+
+    await expect(selectedPerson.locator("option:checked")).toHaveText(
+      "Belgica Aragon"
+    );
   });
 
   test("signup con email repetido muestra error y no crea otro árbol", async ({ page }) => {

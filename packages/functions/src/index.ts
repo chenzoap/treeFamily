@@ -27,6 +27,21 @@ function canonPair(a: string, b: string): [string, string] {
   return a < b ? [a, b] : [b, a];
 }
 
+type PartnerRelationshipStatus = "current" | "former" | "unknown";
+
+function normalizePartnerRelationshipStatus(
+  value: unknown
+): PartnerRelationshipStatus {
+  if (value === "current" || value === "former" || value === "unknown") {
+    return value;
+  }
+
+  throw new HttpsError(
+    "invalid-argument",
+    "El estado de la relación de pareja no es válido."
+  );
+}
+
 function parseUnionId(unionId: string): { kind: "union"; a: string; b: string } | { kind: "single"; a: string } {
   // union:${a}:${b} o single:${a}
   if (unionId.startsWith("union:")) {
@@ -44,6 +59,121 @@ function parseUnionId(unionId: string): { kind: "union"; a: string; b: string } 
 
 function cleanString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function normalizeIdList(value: unknown, fieldName: string): string[] {
+  if (value === undefined || value === null) return [];
+
+  if (!Array.isArray(value)) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${fieldName} debe ser una lista de IDs.`
+    );
+  }
+
+  const ids = Array.from(
+    new Set(
+      value
+        .map((item) => cleanString(item))
+        .filter((item) => item.length > 0)
+    )
+  );
+
+  if (ids.length > 40) {
+    throw new HttpsError(
+      "invalid-argument",
+      "No puedes vincular más de 40 hijos en una sola operación."
+    );
+  }
+
+  return ids;
+}
+
+type ExistingChildLinkPlan = {
+  childIdsToLink: string[];
+  alreadyLinkedChildIds: string[];
+};
+
+async function planExistingChildLinks({
+  tx,
+  personsCol,
+  relsCol,
+  sourceParentId,
+  targetParentId,
+  childIds,
+}: {
+  tx: FirebaseFirestore.Transaction;
+  personsCol: FirebaseFirestore.CollectionReference;
+  relsCol: FirebaseFirestore.CollectionReference;
+  sourceParentId: string;
+  targetParentId: string;
+  childIds: string[];
+}): Promise<ExistingChildLinkPlan> {
+  if (childIds.length === 0) {
+    return { childIdsToLink: [], alreadyLinkedChildIds: [] };
+  }
+
+  const childRefs = childIds.map((childId) => personsCol.doc(childId));
+  const childSnaps = await Promise.all(
+    childRefs.map((childRef) => tx.get(childRef))
+  );
+  const relationshipSnaps = await Promise.all(
+    childIds.map((childId) =>
+      tx.get(relsCol.where("toPersonId", "==", childId))
+    )
+  );
+
+  const childIdsToLink: string[] = [];
+  const alreadyLinkedChildIds: string[] = [];
+
+  childIds.forEach((childId, index) => {
+    if (!childSnaps[index].exists) {
+      throw new HttpsError(
+        "not-found",
+        "Uno de los hijos seleccionados ya no existe."
+      );
+    }
+
+    const parentIds = new Set<string>();
+
+    relationshipSnaps[index].docs.forEach((relationshipDoc) => {
+      const relationship = relationshipDoc.data();
+
+      if (
+        relationship.type === "PARENT_OF" &&
+        typeof relationship.fromPersonId === "string"
+      ) {
+        parentIds.add(relationship.fromPersonId);
+      }
+    });
+
+    if (!parentIds.has(sourceParentId)) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Uno de los hijos seleccionados no pertenece a la persona activa."
+      );
+    }
+
+    if (parentIds.has(targetParentId)) {
+      alreadyLinkedChildIds.push(childId);
+      return;
+    }
+
+    const otherParentIds = Array.from(parentIds).filter(
+      (parentId) => parentId !== sourceParentId
+    );
+
+    if (otherParentIds.length > 0) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Uno de los hijos seleccionados ya tiene otro progenitor registrado. Cambiar esa filiación pertenece a Etapa 8."
+      );
+    }
+
+    childIdsToLink.push(childId);
+  });
+
+  return { childIdsToLink, alreadyLinkedChildIds };
 }
 
 function assertRequiredString(value: unknown, message: string): string {
@@ -254,64 +384,125 @@ export const addPerson = onCall(async (request) => {
  * Mantener temporalmente hasta confirmar que ninguna pantalla activa la usa.
  */
 export const addRelationship = onCall(async (request) => {
-  if (!request.auth) {
-    throw new HttpsError("unauthenticated", "Debes estar autenticado.");
+  const uid = assertAuth(request);
+
+  const { treeId, type, fromPersonId, toPersonId } = request.data as {
+    treeId: string;
+    type: "PARENT_OF" | "PARTNER_OF";
+    fromPersonId: string;
+    toPersonId: string;
+  };
+
+  if (!treeId || !type || !fromPersonId || !toPersonId) {
+    throw new HttpsError("invalid-argument", "Faltan datos obligatorios.");
   }
 
-  const { treeId, type, fromPersonId, toPersonId } = request.data;
+  if (type !== "PARENT_OF" && type !== "PARTNER_OF") {
+    throw new HttpsError("invalid-argument", "Tipo de relación inválido.");
+  }
 
-  // Validación A != B
   if (fromPersonId === toPersonId) {
-    throw new HttpsError("invalid-argument", "Una persona no puede relacionarse consigo misma.");
+    throw new HttpsError(
+      "invalid-argument",
+      "Una persona no puede relacionarse consigo misma."
+    );
   }
 
-  // Validar propiedad del árbol
-  const treeDoc = await db.collection("trees").doc(treeId).get();
-  if (!treeDoc.exists || treeDoc.data()?.ownerId !== request.auth.uid) {
-    throw new HttpsError("permission-denied", "No tienes permiso sobre este árbol.");
+  await assertIsOwner(treeId, uid);
+
+  const treeRef = db.collection("trees").doc(treeId);
+  const personsCol = treeRef.collection("persons");
+  const relationshipsCol = treeRef.collection("relationships");
+
+  const normalizedIds =
+    type === "PARTNER_OF"
+      ? canonPair(fromPersonId, toPersonId)
+      : ([fromPersonId, toPersonId] as [string, string]);
+
+  const [normalizedFromPersonId, normalizedToPersonId] = normalizedIds;
+
+  const fromPersonRef = personsCol.doc(normalizedFromPersonId);
+  const toPersonRef = personsCol.doc(normalizedToPersonId);
+
+  const [fromPersonSnap, toPersonSnap] = await Promise.all([
+    fromPersonRef.get(),
+    toPersonRef.get(),
+  ]);
+
+  if (!fromPersonSnap.exists || !toPersonSnap.exists) {
+    throw new HttpsError(
+      "not-found",
+      "Una o ambas personas de la relación no existen."
+    );
   }
 
-  // Validación Anti-Duplicados
-  const duplicateCheck = await db.collection("trees").doc(treeId).collection("relationships")
-    .where("fromPersonId", "==", fromPersonId)
-    .where("toPersonId", "==", toPersonId)
+  const forwardQuery = relationshipsCol
     .where("type", "==", type)
-    .limit(1)
-    .get();
+    .where("fromPersonId", "==", normalizedFromPersonId)
+    .where("toPersonId", "==", normalizedToPersonId)
+    .limit(1);
 
-  if (!duplicateCheck.empty) {
-    throw new HttpsError("already-exists", "Esta relación ya existe en el árbol.");
+  const queries = [forwardQuery.get()];
+
+  if (type === "PARTNER_OF") {
+    const reverseQuery = relationshipsCol
+      .where("type", "==", type)
+      .where("fromPersonId", "==", normalizedToPersonId)
+      .where("toPersonId", "==", normalizedFromPersonId)
+      .limit(1);
+
+    queries.push(reverseQuery.get());
   }
 
-  const relRef = db.collection("trees").doc(treeId).collection("relationships").doc();
+  const duplicateSnapshots = await Promise.all(queries);
+
+  if (duplicateSnapshots.some((snapshot) => !snapshot.empty)) {
+    throw new HttpsError(
+      "already-exists",
+      "Esta relación ya existe en el árbol."
+    );
+  }
+
+  const relationshipRef = relationshipsCol.doc();
   const timestamp = FieldValue.serverTimestamp();
 
-  await relRef.set({
+  await relationshipRef.set({
     type,
-    fromPersonId,
-    toPersonId,
+    fromPersonId: normalizedFromPersonId,
+    toPersonId: normalizedToPersonId,
+    ...(type === "PARTNER_OF"
+      ? { relationshipStatus: "unknown" as PartnerRelationshipStatus }
+      : {}),
     createdAt: timestamp,
     updatedAt: timestamp,
   });
 
-  return { relationshipId: relRef.id };
+  return { relationshipId: relationshipRef.id };
 });
 
 export const createUnion = onCall(async (request) => {
   const uid = assertAuth(request);
 
-  const { treeId, personAId, personBId } = request.data as {
+  const {
+    treeId,
+    personAId,
+    personBId,
+    relationshipStatus: rawRelationshipStatus = "unknown",
+    childrenOwnerId: rawChildrenOwnerId,
+    existingChildIds: rawExistingChildIds,
+  } = request.data as {
     treeId: string;
     personAId: string;
     personBId: string;
+    relationshipStatus?: PartnerRelationshipStatus;
+    childrenOwnerId?: string;
+    existingChildIds?: string[];
   };
 
-  // Validación mínima de entrada.
   if (!treeId || !personAId || !personBId) {
     throw new HttpsError("invalid-argument", "Faltan datos obligatorios.");
   }
 
-  // Una persona no puede formar pareja consigo misma.
   if (personAId === personBId) {
     throw new HttpsError(
       "invalid-argument",
@@ -319,12 +510,36 @@ export const createUnion = onCall(async (request) => {
     );
   }
 
-  // Solo el dueño del árbol puede crear uniones.
+  const relationshipStatus = normalizePartnerRelationshipStatus(
+    rawRelationshipStatus
+  );
+  const existingChildIds = normalizeIdList(
+    rawExistingChildIds,
+    "existingChildIds"
+  );
+  const childrenOwnerId = cleanString(rawChildrenOwnerId);
+
+  if (
+    existingChildIds.length > 0 &&
+    childrenOwnerId !== personAId &&
+    childrenOwnerId !== personBId
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Debes indicar cuál de las dos personas ya es progenitor/a de los hijos seleccionados."
+    );
+  }
+
   await assertIsOwner(treeId, uid);
 
-  // Canonicalizamos el par para guardar siempre la relación en el mismo orden.
-  // Esto evita duplicados tipo A -> B y B -> A.
   const [a, b] = canonPair(personAId, personBId);
+  const childLinkSourceId =
+    existingChildIds.length > 0 ? childrenOwnerId : null;
+  const childLinkTargetId = childLinkSourceId
+    ? childLinkSourceId === personAId
+      ? personBId
+      : personAId
+    : null;
 
   const treeRef = db.collection("trees").doc(treeId);
   const personsCol = treeRef.collection("persons");
@@ -336,9 +551,12 @@ export const createUnion = onCall(async (request) => {
 
   let relationshipId: string | null = null;
   let alreadyExisted = false;
+  let storedRelationshipStatus: PartnerRelationshipStatus =
+    relationshipStatus;
+  let linkedChildIds: string[] = [];
+  let alreadyLinkedChildIds: string[] = [];
 
   await db.runTransaction(async (tx) => {
-    // Validamos que ambas personas existan antes de crear la unión.
     const personASnap = await tx.get(personARef);
     const personBSnap = await tx.get(personBRef);
 
@@ -346,23 +564,36 @@ export const createUnion = onCall(async (request) => {
       throw new HttpsError("not-found", "Una o ambas personas no existen.");
     }
 
-    // Buscamos si ya existe PARTNER_OF en dirección normal.
     const partnerForwardQuery = relsCol
       .where("type", "==", "PARTNER_OF")
       .where("fromPersonId", "==", a)
-      .where("toPersonId", "==", b);
+      .where("toPersonId", "==", b)
+      .limit(1);
 
-    // Buscamos si ya existe PARTNER_OF en dirección inversa.
-    // Esto protege contra datos viejos o relaciones creadas antes de canonicalizar.
     const partnerReverseQuery = relsCol
       .where("type", "==", "PARTNER_OF")
       .where("fromPersonId", "==", b)
-      .where("toPersonId", "==", a);
+      .where("toPersonId", "==", a)
+      .limit(1);
 
     const partnerForwardSnap = await tx.get(partnerForwardQuery);
     const partnerReverseSnap = await tx.get(partnerReverseQuery);
 
-    // Si ya existe la relación en cualquier dirección, no creamos duplicado.
+    const childLinkPlan =
+      childLinkSourceId && childLinkTargetId
+        ? await planExistingChildLinks({
+            tx,
+            personsCol,
+            relsCol,
+            sourceParentId: childLinkSourceId,
+            targetParentId: childLinkTargetId,
+            childIds: existingChildIds,
+          })
+        : { childIdsToLink: [], alreadyLinkedChildIds: [] };
+
+    linkedChildIds = childLinkPlan.childIdsToLink;
+    alreadyLinkedChildIds = childLinkPlan.alreadyLinkedChildIds;
+
     if (!partnerForwardSnap.empty || !partnerReverseSnap.empty) {
       alreadyExisted = true;
 
@@ -370,35 +601,49 @@ export const createUnion = onCall(async (request) => {
         partnerForwardSnap.docs[0] ?? partnerReverseSnap.docs[0];
 
       relationshipId = existingDoc.id;
-      return;
+
+      const existingStatus = existingDoc.data()?.relationshipStatus;
+      storedRelationshipStatus =
+        existingStatus === "current" || existingStatus === "former"
+          ? existingStatus
+          : "unknown";
+    } else {
+      const relRef = relsCol.doc();
+      relationshipId = relRef.id;
+
+      tx.set(relRef, {
+        type: "PARTNER_OF",
+        fromPersonId: a,
+        toPersonId: b,
+        relationshipStatus,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
     }
 
-    // Creamos la relación PARTNER_OF canonicalizada.
-    const relRef = relsCol.doc();
-    relationshipId = relRef.id;
+    linkedChildIds.forEach((childId) => {
+      const parentRelRef = relsCol.doc();
 
-    tx.set(relRef, {
-      type: "PARTNER_OF",
-      fromPersonId: a,
-      toPersonId: b,
-      createdAt: timestamp,
-      updatedAt: timestamp,
+      tx.set(parentRelRef, {
+        type: "PARENT_OF",
+        fromPersonId: childLinkTargetId,
+        toPersonId: childId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
     });
 
-    // Marcamos ambas personas como actualizadas.
-    tx.update(personARef, {
-      updatedAt: timestamp,
-    });
-
-    tx.update(personBRef, {
-      updatedAt: timestamp,
-    });
+    tx.update(personARef, { updatedAt: timestamp });
+    tx.update(personBRef, { updatedAt: timestamp });
   });
 
   return {
     ok: true,
     relationshipId,
     alreadyExisted,
+    relationshipStatus: storedRelationshipStatus,
+    linkedChildIds,
+    alreadyLinkedChildIds,
   };
 });
 
@@ -414,18 +659,37 @@ type PersonPayload = {
 export const addPartnerToPerson = onCall(async (request) => {
   const uid = assertAuth(request);
 
-  const { treeId, personId, partnerData } = request.data as {
+  const {
+    treeId,
+    personId,
+    partnerData,
+    relationshipStatus: rawRelationshipStatus = "unknown",
+    existingChildIds: rawExistingChildIds,
+  } = request.data as {
     treeId: string;
     personId: string;
     partnerData: PersonPayload;
+    relationshipStatus?: PartnerRelationshipStatus;
+    existingChildIds?: string[];
   };
 
   if (!treeId || !personId || !partnerData) {
     throw new HttpsError("invalid-argument", "Faltan datos obligatorios.");
   }
 
+  const relationshipStatus = normalizePartnerRelationshipStatus(
+    rawRelationshipStatus
+  );
+  const existingChildIds = normalizeIdList(
+    rawExistingChildIds,
+    "existingChildIds"
+  );
+
   if (!partnerData.firstName || !partnerData.lastName) {
-    throw new HttpsError("invalid-argument", "La pareja necesita nombre y apellido.");
+    throw new HttpsError(
+      "invalid-argument",
+      "La pareja necesita nombre y apellido."
+    );
   }
 
   await assertIsOwner(treeId, uid);
@@ -438,6 +702,8 @@ export const addPartnerToPerson = onCall(async (request) => {
   const personRef = personsCol.doc(personId);
   const partnerRef = personsCol.doc();
   const relRef = relsCol.doc();
+  let linkedChildIds: string[] = [];
+  let alreadyLinkedChildIds: string[] = [];
 
   await db.runTransaction(async (tx) => {
     const personSnap = await tx.get(personRef);
@@ -445,6 +711,18 @@ export const addPartnerToPerson = onCall(async (request) => {
     if (!personSnap.exists) {
       throw new HttpsError("not-found", "La persona seleccionada no existe.");
     }
+
+    const childLinkPlan = await planExistingChildLinks({
+      tx,
+      personsCol,
+      relsCol,
+      sourceParentId: personId,
+      targetParentId: partnerRef.id,
+      childIds: existingChildIds,
+    });
+
+    linkedChildIds = childLinkPlan.childIdsToLink;
+    alreadyLinkedChildIds = childLinkPlan.alreadyLinkedChildIds;
 
     tx.set(partnerRef, normalizePersonPayload(partnerData, uid, timestamp));
 
@@ -454,19 +732,32 @@ export const addPartnerToPerson = onCall(async (request) => {
       type: "PARTNER_OF",
       fromPersonId: a,
       toPersonId: b,
+      relationshipStatus,
       createdAt: timestamp,
       updatedAt: timestamp,
     });
 
-    tx.update(personRef, {
-      updatedAt: timestamp,
+    linkedChildIds.forEach((childId) => {
+      const parentRelRef = relsCol.doc();
+
+      tx.set(parentRelRef, {
+        type: "PARENT_OF",
+        fromPersonId: partnerRef.id,
+        toPersonId: childId,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
     });
+
+    tx.update(personRef, { updatedAt: timestamp });
   });
 
   return {
     ok: true,
     partnerId: partnerRef.id,
     relationshipId: relRef.id,
+    linkedChildIds,
+    alreadyLinkedChildIds,
   };
 });
 

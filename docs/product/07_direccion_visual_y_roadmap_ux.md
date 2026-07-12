@@ -5,7 +5,8 @@
 **Proyecto:** Tree Family / Árbol Genealógico  
 **Estado del proyecto:** Stage 6.1 cerrado; Etapa 7 activa  
 **Documento relacionado:** `docs/product/06_especificacion_etapa_7.md`  
-**Fecha de aprobación:** 2026-06-16  
+**Fecha de aprobación:** 2026-06-16
+**Última actualización:** 2026-07-02  
 **Estado:** Aprobado para implementación gradual
 
 ---
@@ -216,6 +217,13 @@ Refinar la experiencia actual sin agregar grandes capacidades nuevas.
 | Zoom/pan básico | Sí |
 | Mejorar nodos sin fotografía | Sí |
 | Mejorar conectores | Sí |
+| Motor de layout reactivo con reflow completo | Sí |
+| Reserva de espacio por rama y detección de colisiones | Sí |
+| Tipos `couple`, `coParents` y `singleParent` | Sí |
+| Semántica mínima de pareja actual/expareja/no especificada | Sí |
+| Relacionar personas existentes como pareja | Sí, Bloque 4B |
+| Asociar hijos existentes al crear pareja | Sí, flujo no destructivo |
+| Tolerancia a uniones y relaciones huérfanas | Sí |
 | Mensajes de carga, éxito y error | Sí |
 | Responsive básico desktop/laptop | Sí |
 | Móvil completo | No |
@@ -228,10 +236,185 @@ Refinar la experiencia actual sin agregar grandes capacidades nuevas.
 4. Mejorar botones de relación.
 5. Mejorar formularios.
 6. Mejorar el estado vacío.
-7. Mejorar nodos y conectores.
-8. Validar casos familiares representativos.
-9. Ejecutar build y E2E.
-10. Actualizar documentación de avance.
+7. Mejorar nodos y conectores básicos.
+8. Implementar Bloque 4A: motor de layout reactivo.
+9. Documentar Bloque 4B: tipos de unión y reconciliación.
+10. Incorporar `couple`, `coParents` y `singleParent`.
+11. Construir uniones coparentales automáticamente.
+12. Relacionar personas existentes como pareja.
+13. Asociar hijos existentes al crear pareja.
+14. Actualizar el validador.
+15. Ejecutar el pulido visual 4A.4 por tipo de unión.
+16. Validar escenarios familiares simples y medianos.
+17. Ejecutar build y E2E.
+18. Actualizar documentación de avance.
+
+---
+
+
+### 6.4 Bloque 4A — Motor de layout reactivo
+
+#### Decisión
+
+El árbol debe reaccionar automáticamente a cada alta o cambio de personas y relaciones. En Etapa 7 se realizará un **reflow completo** de la geometría SVG después de cada mutación.
+
+No se recargará la página. El estado actualizado provocará:
+
+```text
+Cambio de datos
+→ reconstrucción de grupos familiares
+→ medición bottom-up
+→ posicionamiento top-down
+→ verificación de colisiones
+→ redibujado SVG
+```
+
+#### Reserva de espacio por familia
+
+Cada unión debe reservar ancho según:
+
+- la tarjeta de la persona y su pareja;
+- el número de hijos;
+- el ancho acumulado de las ramas de cada hijo;
+- parejas y descendientes adicionales dentro de esas ramas;
+- separación mínima respecto a familias vecinas.
+
+La distribución no debe depender de offsets constantes como solución principal.
+
+#### Alcance de Etapa 7
+
+- Reflow completo y predecible.
+- Soporte para árboles medianos.
+- Varias parejas con hijos independientes.
+- Hermanos con parejas y descendencia.
+- Hijos monoparentales en un bloque propio.
+- Conectores que terminen en bordes.
+- Detección y corrección de colisiones antes de dibujar.
+
+#### Etapa 7.2
+
+Se reserva para:
+
+- recálculo sectorial de ramas modificadas;
+- propagación de cambios de ancho solo hacia ancestros y ramas vecinas;
+- conservación avanzada de la cámara;
+- animaciones de reflow;
+- ramas colapsables y render parcial.
+
+---
+
+### 6.5 Bloque 4B — Tipos de unión y reconciliación familiar mínima
+
+#### Problema de producto
+
+La aplicación debe representar correctamente tres situaciones distintas:
+
+1. Dos personas registradas explícitamente como pareja.
+2. Dos personas que comparten hijos, sin afirmar que son pareja.
+3. Una familia con un solo progenitor conocido.
+
+La claridad visual no debe obtenerse falseando la historia familiar.
+
+#### Tipos internos aprobados
+
+```ts
+type UnionKind = "couple" | "coParents" | "singleParent";
+```
+
+| Tipo | Fuente de datos | Significado |
+|---|---|---|
+| `couple` | `PARTNER_OF` | Relación de pareja explícita. |
+| `coParents` | Hijos compartidos sin `PARTNER_OF` | Coprogenitores, sin inferir relación sentimental. |
+| `singleParent` | Un solo `PARENT_OF` válido | Familia monoparental o segundo progenitor aún no registrado. |
+
+#### Estado de pareja
+
+```ts
+relationshipStatus?: "current" | "former" | "unknown";
+```
+
+El estado se aplica únicamente a `couple`.
+
+| Valor | Texto |
+|---|---|
+| `current` | Pareja actual |
+| `former` | Expareja |
+| `unknown` | Relación de pareja |
+
+#### Reglas aprobadas
+
+- Dos progenitores sin `PARTNER_OF` forman una unión visual `coParents`.
+- No se debe obligar a crear una pareja para agrupar correctamente a los hijos.
+- Varios hijos del mismo par se agrupan en una unión canónica.
+- Crear `PARTNER_OF` sobre coprogenitores convierte la unión en `couple` sin duplicar hijos.
+- El usuario puede relacionar dos personas existentes como pareja.
+- Al crear una pareja después de los hijos, se pregunta qué hijos también pertenecen a esa persona.
+- No se asignan hijos automáticamente.
+- Durante el MVP, los hijos con dos progenitores ya registrados no aceptan un tercero desde este flujo.
+- La edición general, eliminación y reasignación destructiva permanecen en Etapa 8.
+
+#### Dirección visual para 4A.4
+
+| Tipo | Estilo |
+|---|---|
+| `couple` | Terracota, con semántica de pareja. |
+| `coParents` | Beige/dorado neutral, sin corazón ni lenguaje romántico. |
+| `singleParent` | Marcador neutral y conexión desde una persona. |
+
+#### Validación
+
+`validate:tree` dejará de advertir por dos progenitores sin `PARTNER_OF`, porque será una configuración válida. Seguirá reportando referencias huérfanas, duplicados, autorrelaciones y más de dos progenitores dentro del modelo MVP.
+
+#### Etapa 8
+
+- Editar datos personales.
+- Cambiar estado de una relación existente.
+- Fechas de inicio y separación.
+- Quitar o reemplazar progenitores.
+- Eliminar o corregir relaciones de forma destructiva.
+- Adopción y otros tipos parentales.
+
+---
+
+### 6.6 Bloque 4C — Integridad defensiva
+
+#### Problema detectado
+
+Firestore no elimina automáticamente relaciones o uniones cuando una persona es eliminada manualmente. Pueden quedar referencias huérfanas.
+
+#### Alcance de Etapa 7
+
+- Ignorar uniones no resolubles.
+- No mostrar círculos ni conectores vacíos.
+- Mantener visible el resto del árbol válido.
+- Emitir advertencias solo en desarrollo.
+- Ampliar `validate:tree` para detectar personas, parejas o hijos inexistentes.
+
+#### Etapa 8
+
+La eliminación desde la aplicación deberá ser transaccional y diferenciar:
+
+- eliminar una persona;
+- eliminar solo un vínculo;
+- actualizar una unión;
+- conservar familiares y descendencia válidos.
+
+---
+
+### 6.7 Criterios de cierre de los bloques 4A, 4B y 4C
+
+- Una pareja con cinco o más hijos no se superpone.
+- Dos parejas con hijos diferentes mantienen ramas independientes.
+- Un hijo monoparental no se mezcla con otra unión.
+- Hermanos con pareja e hijos reservan espacio lateral suficiente.
+- Las líneas terminan en los bordes de tarjetas y marcadores.
+- Pareja actual, expareja y relación no especificada se distinguen.
+- Pareja, coprogenitores y unión monoparental se diferencian sin inventar relaciones.
+- Dos personas existentes pueden relacionarse como pareja sin duplicarse.
+- Los hijos existentes pueden asociarse de forma opcional a una nueva pareja.
+- El validador acepta coprogenitores sin `PARTNER_OF`.
+- Una referencia huérfana no rompe el árbol ni deja marcadores vacíos.
+- El árbol se recalcula después de cada mutación.
 
 ---
 
@@ -297,8 +480,12 @@ Crear la experiencia diferenciadora del producto sin comprometer el MVP base.
 - Transición lateral.
 - Preparación para móvil.
 
-### 8.6 Árboles grandes
+### 8.6 Árboles grandes y recálculo sectorial
 
+- Marcar como modificada la rama afectada.
+- Recalcular el subárbol y propagar cambios de ancho hacia ancestros.
+- Ajustar solo ramas vecinas con riesgo de colisión.
+- Conservar la posición visual de áreas no afectadas.
 - Colapsar ramas.
 - Expandir ramas.
 - Agrupar miniárboles.
@@ -315,6 +502,15 @@ Crear la experiencia diferenciadora del producto sin comprometer el MVP base.
 - Ajustar a pantalla.
 - Mostrar nivel de zoom.
 
+### 8.8 Optimización técnica de carga
+
+Deuda técnica registrada durante Etapa 7:
+
+- Bundle principal superior al umbral informativo de 500 kB de Vite.
+- El build continúa siendo válido y la advertencia no bloquea la etapa.
+- No se aumentará el límite únicamente para ocultar la advertencia.
+- La separación avanzada mediante lazy loading, imports dinámicos y chunks específicos de Firebase/D3 se evaluará al cerrar Etapa 7 o durante Etapa 7.2.
+
 ---
 
 ## 9. Etapa 8 — Edición avanzada y manejo seguro de relaciones
@@ -325,8 +521,11 @@ Incluye:
 - eliminar una relación sin borrar accidentalmente la persona;
 - cambiar una relación;
 - confirmaciones destructivas;
-- segunda pareja;
+- editar o corregir parejas existentes;
+- cambiar una relación entre pareja actual, expareja o no especificada;
+- fechas de inicio o separación;
 - hijos de diferentes relaciones;
+- quitar, reemplazar o reasignar progenitores de forma destructiva;
 - corrección de padre/madre/pareja;
 - validaciones de consistencia;
 - separación entre “eliminar vínculo” y “eliminar persona”.
@@ -429,6 +628,12 @@ No se diseñará monetización antes de validar el valor central del producto.
 | Nodos sin foto mejorados | 7 |
 | Estado vacío mejorado | 7 |
 | Zoom/pan básico | 7 |
+| Motor de layout reactivo | 7 |
+| Reflow completo después de mutaciones | 7 |
+| Reserva de espacio y detección de colisiones | 7 |
+| Semántica mínima pareja/expareja | 7 |
+| Integridad defensiva ante referencias huérfanas | 7 |
+| Recálculo sectorial optimizado | 7.2 |
 | Privacidad visible | 7 / 7.1 |
 | Páginas legales | 7.1 |
 | Click en nodo | 7.2 |
@@ -440,7 +645,7 @@ No se diseñará monetización antes de validar el valor central del producto.
 | Miniárboles agrupados | 7.2 / futuro |
 | Editar persona | 8 |
 | Eliminar relación segura | 8 |
-| Relaciones complejas | 8 |
+| Edición y corrección de relaciones existentes | 8 |
 | Fotos | 9 |
 | Biografías y notas | 9 |
 | Sidebar completa | 10 |
@@ -498,6 +703,25 @@ No se diseñará monetización antes de validar el valor central del producto.
 
 ---
 
+
+### Riesgo: corregir cada caso con offsets fijos
+
+**Mitigación:** medir ramas completas, reservar bloques y separar cálculo geométrico del render SVG.
+
+### Riesgo: confundir pareja con coprogenitores
+
+**Mitigación:** derivar `couple`, `coParents` y `singleParent`; aplicar `relationshipStatus` únicamente a `PARTNER_OF`; no inventar relaciones sentimentales para mejorar el dibujo.
+
+### Riesgo: referencias huérfanas en Firestore
+
+**Mitigación:** render defensivo y validador en Etapa 7; eliminación segura y transaccional en Etapa 8.
+
+### Riesgo: optimización sectorial prematura
+
+**Mitigación:** usar reflow completo en árboles medianos durante Etapa 7 y mover la optimización incremental a Etapa 7.2.
+
+---
+
 ## 15. Criterios para aceptar cambios visuales
 
 Un cambio visual será aceptado cuando:
@@ -511,6 +735,10 @@ Un cambio visual será aceptado cuando:
 - mantiene build y pruebas en verde;
 - funciona sin fotografías;
 - es comprensible para un usuario no técnico.
+- mantiene separadas ramas familiares de complejidad media;
+- recalcula el layout después de mutaciones;
+- no deja marcadores o conectores huérfanos;
+- no comunica de forma ambigua el estado de varias parejas.
 
 ---
 

@@ -6,7 +6,8 @@ export const buildAncestry = (
   allUnions: Union[],
   visited = new Set<string>()
 ): TreeNode | null => {
-  const person = allPersons.find(p => p.id === personId);
+  const person = allPersons.find((candidate) => candidate.id === personId);
+
   if (!person || visited.has(personId)) return null;
 
   const nextVisited = new Set(visited);
@@ -19,14 +20,11 @@ export const buildAncestry = (
     children: [],
   };
 
-  // Buscamos las uniones donde esta persona aparece como hijo/a.
-  // Ejemplo: si Fernando es hijo de Jose + Rosa, aquí obtenemos esa unión.
-  const parentUnions = allUnions.filter(u => u.children.includes(personId));
+  const parentUnions = allUnions.filter((union) =>
+    union.children.includes(personId)
+  );
 
-  parentUnions.forEach(union => {
-    // En ancestros NO agregamos padre y madre directamente al nodo persona.
-    // Creamos primero un nodo de unión para que el render pueda mostrar
-    // visualmente el punto azul entre ambos padres.
+  parentUnions.forEach((union) => {
     const unionNode: TreeNode = {
       id: union.id,
       type: "union",
@@ -34,7 +32,7 @@ export const buildAncestry = (
       children: [],
     };
 
-    [union.partnerA, union.partnerB].forEach(parentId => {
+    [union.partnerA, union.partnerB].forEach((parentId) => {
       if (!parentId) return;
 
       const parentHierarchy = buildAncestry(
@@ -49,7 +47,6 @@ export const buildAncestry = (
       }
     });
 
-    // Solo agregamos la unión si tiene al menos un padre/madre válido.
     if ((unionNode.children?.length ?? 0) > 0) {
       node.children?.push(unionNode);
     }
@@ -64,9 +61,12 @@ export const buildDescendants = (
   allUnions: Union[],
   visited = new Set<string>()
 ): TreeNode | null => {
-  const person = allPersons.find(p => p.id === personId);
+  const person = allPersons.find((candidate) => candidate.id === personId);
+
   if (!person || visited.has(personId)) return null;
-  visited.add(personId);
+
+  const nextVisited = new Set(visited);
+  nextVisited.add(personId);
 
   const node: TreeNode = {
     id: person.id,
@@ -76,10 +76,11 @@ export const buildDescendants = (
   };
 
   const personUnions = allUnions.filter(
-    u => u.partnerA === personId || u.partnerB === personId
+    (union) =>
+      union.partnerA === personId || union.partnerB === personId
   );
 
-  personUnions.forEach(union => {
+  personUnions.forEach((union) => {
     const unionNode: TreeNode = {
       id: union.id,
       type: "union",
@@ -87,12 +88,12 @@ export const buildDescendants = (
       children: [],
     };
 
-    union.children.forEach(childId => {
+    union.children.forEach((childId) => {
       const childHierarchy = buildDescendants(
         childId,
         allPersons,
         allUnions,
-        visited
+        nextVisited
       );
 
       if (childHierarchy) {
