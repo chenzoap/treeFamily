@@ -15,6 +15,9 @@ export const FAMILY_LAYOUT = {
   familyBlockGap: 96,
   unionBlockGap: 88,
   childBranchGap: 72,
+  familyConnectorLaneGap: 48,
+  familyConnectorTopClearance: 22,
+  familyConnectorBottomClearance: 30,
   markerToPartnerCenter: 126,
 } as const;
 
@@ -759,6 +762,7 @@ export function buildFamilyLayout(
       FAMILY_LAYOUT.minimumHorizontalGap +
       collateralSiblingCount *
         (FAMILY_LAYOUT.personWidth + FAMILY_LAYOUT.childBranchGap);
+    let hasPlacedAdditionalFamily = false;
 
     return extraUnions.map((union, unionIndex) => {
       claimedUnions.add(unionKey(union));
@@ -792,9 +796,12 @@ export function buildFamilyLayout(
         : FAMILY_LAYOUT.personWidth / 2 +
           FAMILY_LAYOUT.minimumHorizontalGap +
           rankGap;
+      const additionalFamilyGap = hasPlacedAdditionalFamily
+        ? 0
+        : FAMILY_LAYOUT.familyBlockGap;
       const childClearanceDistance =
         occupiedOutwardDistance +
-        FAMILY_LAYOUT.familyBlockGap +
+        additionalFamilyGap +
         childSpan / 2;
       const markerDistance = Math.max(
         minimumMarkerDistance,
@@ -922,6 +929,7 @@ export function buildFamilyLayout(
         maxY: familyMaxY,
       });
 
+      hasPlacedAdditionalFamily = true;
       return mergeBranches(branchParts);
     });
   };
@@ -1024,7 +1032,9 @@ export function buildFamilyLayout(
       parentA: Person;
       parentB: Person | null;
       parentABranch: PersonBranch;
+      parentAExtraFamilyBranches: PersonBranch[];
       parentBBranch: PersonBranch | null;
+      parentBExtraFamilyBranches: PersonBranch[];
       collateralBranches: PersonBranch[];
       width: number;
       minX: number;
@@ -1052,7 +1062,15 @@ export function buildFamilyLayout(
 
       const parentAOutwardSide =
         preferredCollateralSide !== 0 ? preferredCollateralSide : -1;
-      const parentABaseBranch = buildAncestorBranch(
+      /*
+       * La rama ancestral principal y las familias descendentes adicionales
+       * del progenitor se conservan separadas durante la colocación.
+       *
+       * Si se fusionan antes de ubicar a los hermanos de la unión actual,
+       * los hijos de otras uniones se convierten en obstáculos y expulsan a
+       * los hermanos legítimos fuera de su propio bloque familiar.
+       */
+      const parentABranch = buildAncestorBranch(
         parentA.id,
         parentAOutwardSide
       );
@@ -1062,10 +1080,6 @@ export function buildFamilyLayout(
           parentUnion.id,
           parentAOutwardSide
         );
-      const parentABranch = mergeBranches([
-        parentABaseBranch,
-        ...parentAExtraFamilyBranches,
-      ]);
       const collateralBranches = Array.from(new Set(parentUnion.children))
         .filter((childId) => childId !== personId)
         .map((childId) => {
@@ -1110,7 +1124,9 @@ export function buildFamilyLayout(
           parentA,
           parentB: null,
           parentABranch,
+          parentAExtraFamilyBranches,
           parentBBranch: null,
+          parentBExtraFamilyBranches: [],
           collateralBranches,
           width: Math.max(FAMILY_LAYOUT.personWidth, maxX - minX),
           minX,
@@ -1125,7 +1141,7 @@ export function buildFamilyLayout(
 
       const parentBOutwardSide =
         preferredCollateralSide !== 0 ? preferredCollateralSide : 1;
-      const parentBBaseBranch = buildAncestorBranch(
+      const parentBBranch = buildAncestorBranch(
         parentB.id,
         parentBOutwardSide
       );
@@ -1135,10 +1151,6 @@ export function buildFamilyLayout(
           parentUnion.id,
           parentBOutwardSide
         );
-      const parentBBranch = mergeBranches([
-        parentBBaseBranch,
-        ...parentBExtraFamilyBranches,
-      ]);
       const requiredParentDistance = Math.max(
         FAMILY_LAYOUT.coupleDistance,
         parentABranch.maxX -
@@ -1164,7 +1176,9 @@ export function buildFamilyLayout(
         parentA,
         parentB,
         parentABranch,
+        parentAExtraFamilyBranches,
         parentBBranch,
+        parentBExtraFamilyBranches,
         collateralBranches,
         width: Math.max(FAMILY_LAYOUT.coupleDistance, maxX - minX),
         minX,
@@ -1353,44 +1367,62 @@ export function buildFamilyLayout(
       const childrenCenterX =
         collateralPlacement?.childrenCenterX ?? unit.markerX;
 
-      // El bloque parental completo se centra sobre el conjunto real de hijos.
-      // Se desplazan juntos pareja, marcador y sus ancestros, conservando la
-      // simetría interna de la pareja y evitando troncos diagonales extensos.
-      const hasAdditionalDescendantFamilies = [
-        unit.parentABranch,
-        unit.parentBBranch,
-      ]
-        .filter((branch): branch is PersonBranch => Boolean(branch))
-        .some((branch) =>
-          branch.persons.some(
-            (node) => node.y > PERSON_HALF_HEIGHT
-          )
-        );
+      // El bloque parental principal se centra sobre sus propios hijos.
+      // Las familias adicionales de cada progenitor se trasladan después,
+      // junto con su persona ancla, pero nunca participan en el cálculo que
+      // decide dónde deben quedar los hermanos de esta unión.
       const familyCenterShiftX =
-        parentUnits.length === 1 && !hasAdditionalDescendantFamilies
+        parentUnits.length === 1
           ? childrenCenterX - unit.markerX
           : 0;
+      const parentAOffsetX =
+        unit.centerX + unit.parentAX + familyCenterShiftX;
       const shiftedParentA = translateBranch(
         unit.parentABranch,
-        unit.centerX + unit.parentAX + familyCenterShiftX,
+        parentAOffsetX,
         parentY,
         -1
       );
       const shiftedBranches: PersonBranch[] = [shiftedParentA];
+
+      unit.parentAExtraFamilyBranches.forEach((branch) => {
+        shiftedBranches.push(
+          translateBranch(
+            branch,
+            parentAOffsetX,
+            parentY,
+            -1
+          )
+        );
+      });
 
       if (
         unit.parentB &&
         unit.parentBBranch &&
         unit.parentBX !== null
       ) {
+        const parentBOffsetX =
+          unit.centerX + unit.parentBX + familyCenterShiftX;
+
         shiftedBranches.push(
           translateBranch(
             unit.parentBBranch,
-            unit.centerX + unit.parentBX + familyCenterShiftX,
+            parentBOffsetX,
             parentY,
             -1
           )
         );
+
+        unit.parentBExtraFamilyBranches.forEach((branch) => {
+          shiftedBranches.push(
+            translateBranch(
+              branch,
+              parentBOffsetX,
+              parentY,
+              -1
+            )
+          );
+        });
       }
 
       const unionY =
@@ -1461,38 +1493,102 @@ export function buildFamilyLayout(
 
   let occupiedLeft = rootBranch.minX;
   let occupiedRight = rootBranch.maxX;
-  let leftCount = 0;
-  let rightCount = 0;
 
-  siblingIds
-    .filter((personId) => personId !== rootPersonId)
-    .forEach((personId, index) => {
-      const branch = branchesByPersonId.get(personId);
-      if (!branch) return;
+  /*
+   * Los hijos de la unión parental principal deben conservarse como un
+   * grupo reconocible. Antes se posicionaba cada rama usando su anchura
+   * completa. Si la persona principal tenía una rama descendente grande,
+   * sus hermanos eran expulsados fuera de ese bloque y terminaban mezclados
+   * con los hijos de otra unión del mismo progenitor.
+   *
+   * Ahora se reserva primero una fila compacta para las tarjetas raíz de los
+   * hermanos. La rama más pesada de la persona principal determina hacia qué
+   * lado se colocan los demás: si crece principalmente a la derecha, los
+   * hermanos se mantienen juntos a la izquierda, y viceversa. Solo se añade
+   * desplazamiento adicional cuando las ramas reales colisionan.
+   */
+  const siblingRootGap =
+    FAMILY_LAYOUT.personWidth + FAMILY_LAYOUT.childBranchGap;
+  const rootLeftExtent = Math.max(
+    0,
+    -rootBranch.minX - PERSON_HALF_WIDTH
+  );
+  const rootRightExtent = Math.max(
+    0,
+    rootBranch.maxX - PERSON_HALF_WIDTH
+  );
+  const directionalThreshold =
+    FAMILY_LAYOUT.personWidth + FAMILY_LAYOUT.minimumHorizontalGap;
+  const compactSiblingSide: -1 | 0 | 1 =
+    rootRightExtent > rootLeftExtent + directionalThreshold
+      ? -1
+      : rootLeftExtent > rootRightExtent + directionalThreshold
+        ? 1
+        : 0;
+  const remainingSiblingIds = siblingIds.filter(
+    (personId) => personId !== rootPersonId
+  );
 
-      const placeLeft = index % 2 === 0;
-      let shiftX: number;
+  const placeSiblingBranch = (
+    personId: string,
+    requestedRootX: number,
+    side: -1 | 1
+  ): number => {
+    const branch = branchesByPersonId.get(personId);
+    if (!branch) return requestedRootX;
 
-      if (placeLeft) {
-        shiftX =
-          occupiedLeft - FAMILY_LAYOUT.familyBlockGap - branch.maxX;
-        occupiedLeft = shiftX + branch.minX;
-        leftCount += 1;
-      } else {
-        shiftX =
-          occupiedRight + FAMILY_LAYOUT.familyBlockGap - branch.minX;
-        occupiedRight = shiftX + branch.maxX;
-        rightCount += 1;
-      }
+    const collisionShift = requiredOutwardShift(
+      branch,
+      requestedRootX,
+      0,
+      placedBranches,
+      side
+    );
+    const shiftX = requestedRootX + side * collisionShift;
+    const translated = translateBranch(branch, shiftX, 0, 0);
 
-      if (leftCount > rightCount + 1) {
-        warnings.push("La distribución de ramas laterales quedó cargada a la izquierda.");
-      }
+    placedBranches.push(translated);
+    siblingRootPositions.set(personId, shiftX);
+    occupiedLeft = Math.min(occupiedLeft, translated.minX);
+    occupiedRight = Math.max(occupiedRight, translated.maxX);
 
-      const translated = translateBranch(branch, shiftX, 0, 0);
-      placedBranches.push(translated);
-      siblingRootPositions.set(personId, shiftX);
+    return shiftX;
+  };
+
+  if (compactSiblingSide !== 0) {
+    let nextRootX = compactSiblingSide * siblingRootGap;
+
+    remainingSiblingIds.forEach((personId) => {
+      const placedRootX = placeSiblingBranch(
+        personId,
+        nextRootX,
+        compactSiblingSide
+      );
+
+      nextRootX =
+        placedRootX + compactSiblingSide * siblingRootGap;
     });
+  } else {
+    let nextLeftRootX = -siblingRootGap;
+    let nextRightRootX = siblingRootGap;
+
+    remainingSiblingIds.forEach((personId, index) => {
+      const side: -1 | 1 = index % 2 === 0 ? -1 : 1;
+      const requestedRootX =
+        side === -1 ? nextLeftRootX : nextRightRootX;
+      const placedRootX = placeSiblingBranch(
+        personId,
+        requestedRootX,
+        side
+      );
+
+      if (side === -1) {
+        nextLeftRootX = placedRootX - siblingRootGap;
+      } else {
+        nextRightRootX = placedRootX + siblingRootGap;
+      }
+    });
+  }
 
   const topLevelPersons: RelativePersonNode[] = [];
   const topLevelUnions: RelativeUnionNode[] = [];

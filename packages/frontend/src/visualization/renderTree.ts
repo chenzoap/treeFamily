@@ -46,6 +46,26 @@ interface UnionVisualStyle {
   label: string;
 }
 
+interface DescendantConnectorPlan {
+  children: LayoutPersonNode[];
+  safeExitY: number;
+  busY: number | null;
+  lane: number;
+}
+
+interface DescendantLaneCandidate {
+  union: LayoutUnionNode;
+  children: LayoutPersonNode[];
+  safeExitY: number;
+  minimumX: number;
+  maximumX: number;
+  childTopY: number;
+  preferredBusY: number;
+  minimumBusY: number;
+  maximumBusY: number;
+  lane: number;
+}
+
 const UNION_VISUAL_STYLES: Record<
   FamilyUnionKind,
   UnionVisualStyle
@@ -306,6 +326,222 @@ function branchBusY(
   );
 
   return union.y + drop;
+}
+
+function intervalsOverlap(
+  firstMinimumX: number,
+  firstMaximumX: number,
+  secondMinimumX: number,
+  secondMaximumX: number,
+  clearance = 0
+): boolean {
+  return (
+    firstMinimumX <= secondMaximumX + clearance &&
+    secondMinimumX <= firstMaximumX + clearance
+  );
+}
+
+function sameConnectorGeneration(
+  first: DescendantLaneCandidate,
+  second: DescendantLaneCandidate
+): boolean {
+  const unionTolerance = FAMILY_LAYOUT.personHeight + 28;
+  const childTolerance = FAMILY_LAYOUT.personHeight + 28;
+
+  return (
+    Math.abs(first.union.y - second.union.y) <= unionTolerance &&
+    Math.abs(first.childTopY - second.childTopY) <= childTolerance
+  );
+}
+
+/**
+ * Reserva carriles verticales distintos para barras de hijos cuyos
+ * intervalos horizontales se cruzan.
+ *
+ * Caso principal:
+ * una persona participa en varias uniones y cada unión tiene hijos propios.
+ * Sin carriles, las barras quedan casi en la misma altura y parecen formar
+ * una sola familia. Las familias de mayor amplitud se colocan primero en el
+ * carril superior; los bloques internos usan carriles inferiores. Así, los
+ * tallos de la familia exterior permanecen fuera del intervalo interior y
+ * se reducen cruces visuales.
+ */
+function buildDescendantConnectorPlans(
+  layout: FamilyLayoutResult,
+  personsById: Map<string, LayoutPersonNode>
+): Map<string, DescendantConnectorPlan> {
+  const plans = new Map<string, DescendantConnectorPlan>();
+  const candidates: DescendantLaneCandidate[] = [];
+
+  layout.unions.forEach((union) => {
+    const children = union.childIds
+      .map((childId) => personsById.get(childId))
+      .filter((child): child is LayoutPersonNode => Boolean(child))
+      .sort((first, second) => first.x - second.x);
+    const safeExitY = descendantSafeExitY(union, personsById);
+
+    if (children.length <= 1) {
+      plans.set(union.id, {
+        children,
+        safeExitY,
+        busY: null,
+        lane: 0,
+      });
+      return;
+    }
+
+    const minimumX = children[0].x;
+    const maximumX = children[children.length - 1].x;
+    const childTopY = Math.min(
+      ...children.map((child) => child.y - outerHalfHeight(child))
+    );
+    const preferredBusY = branchBusY(union, children);
+    const minimumBusY = Math.max(
+      union.y + MIN_BRANCH_DROP,
+      safeExitY + FAMILY_LAYOUT.familyConnectorTopClearance
+    );
+    const maximumBusY = Math.max(
+      minimumBusY,
+      childTopY - FAMILY_LAYOUT.familyConnectorBottomClearance
+    );
+
+    candidates.push({
+      union,
+      children,
+      safeExitY,
+      minimumX,
+      maximumX,
+      childTopY,
+      preferredBusY,
+      minimumBusY,
+      maximumBusY,
+      lane: 0,
+    });
+  });
+
+  const unvisited = new Set(candidates);
+  const components: DescendantLaneCandidate[][] = [];
+
+  while (unvisited.size > 0) {
+    const first = unvisited.values().next().value as
+      | DescendantLaneCandidate
+      | undefined;
+
+    if (!first) break;
+
+    const component: DescendantLaneCandidate[] = [];
+    const pending = [first];
+    unvisited.delete(first);
+
+    while (pending.length > 0) {
+      const current = pending.pop();
+
+      if (!current) continue;
+      component.push(current);
+
+      Array.from(unvisited).forEach((candidate) => {
+        if (
+          sameConnectorGeneration(current, candidate) &&
+          intervalsOverlap(
+            current.minimumX,
+            current.maximumX,
+            candidate.minimumX,
+            candidate.maximumX,
+            12
+          )
+        ) {
+          unvisited.delete(candidate);
+          pending.push(candidate);
+        }
+      });
+    }
+
+    components.push(component);
+  }
+
+  components.forEach((component) => {
+    const ordered = [...component].sort((first, second) => {
+      const firstSpan = first.maximumX - first.minimumX;
+      const secondSpan = second.maximumX - second.minimumX;
+
+      if (Math.abs(firstSpan - secondSpan) > 0.5) {
+        return secondSpan - firstSpan;
+      }
+
+      return first.union.id.localeCompare(second.union.id);
+    });
+    const lanes: DescendantLaneCandidate[][] = [];
+
+    ordered.forEach((candidate) => {
+      let lane = lanes.findIndex((laneCandidates) =>
+        laneCandidates.every(
+          (placed) =>
+            !sameConnectorGeneration(candidate, placed) ||
+            !intervalsOverlap(
+              candidate.minimumX,
+              candidate.maximumX,
+              placed.minimumX,
+              placed.maximumX,
+              12
+            )
+        )
+      );
+
+      if (lane < 0) {
+        lane = lanes.length;
+        lanes.push([]);
+      }
+
+      candidate.lane = lane;
+      lanes[lane].push(candidate);
+    });
+
+    const laneCount = Math.max(1, lanes.length);
+
+    if (laneCount === 1) {
+      component.forEach((candidate) => {
+        plans.set(candidate.union.id, {
+          children: candidate.children,
+          safeExitY: candidate.safeExitY,
+          busY: Math.max(
+            candidate.minimumBusY,
+            Math.min(candidate.maximumBusY, candidate.preferredBusY)
+          ),
+          lane: 0,
+        });
+      });
+      return;
+    }
+
+    const commonTopY = Math.max(
+      ...component.map((candidate) => candidate.minimumBusY)
+    );
+    const commonBottomY = Math.min(
+      ...component.map((candidate) => candidate.maximumBusY)
+    );
+    const availableHeight = Math.max(0, commonBottomY - commonTopY);
+    const laneGap = Math.min(
+      FAMILY_LAYOUT.familyConnectorLaneGap,
+      availableHeight / Math.max(1, laneCount - 1)
+    );
+
+    component.forEach((candidate) => {
+      const requestedBusY = commonTopY + candidate.lane * laneGap;
+      const busY = Math.max(
+        candidate.minimumBusY,
+        Math.min(candidate.maximumBusY, requestedBusY)
+      );
+
+      plans.set(candidate.union.id, {
+        children: candidate.children,
+        safeExitY: candidate.safeExitY,
+        busY,
+        lane: candidate.lane,
+      });
+    });
+  });
+
+  return plans;
 }
 
 function busBow(
@@ -627,6 +863,8 @@ export const renderFullTree = (
   const personsById = new Map(
     layout.persons.map((node) => [node.id, node])
   );
+  const descendantConnectorPlans =
+    buildDescendantConnectorPlans(layout, personsById);
 
   warnAboutConnectorGeometry(layout, personsById);
 
@@ -665,14 +903,12 @@ export const renderFullTree = (
       }
     }
 
-    const children = unionNode.childIds
-      .map((childId) => personsById.get(childId))
-      .filter((child): child is LayoutPersonNode => Boolean(child))
-      .sort((first, second) => first.x - second.x);
-    const safeExitY = descendantSafeExitY(
-      unionNode,
-      personsById
-    );
+    const descendantPlan =
+      descendantConnectorPlans.get(unionNode.id);
+    const children = descendantPlan?.children ?? [];
+    const safeExitY =
+      descendantPlan?.safeExitY ??
+      descendantSafeExitY(unionNode, personsById);
 
     if (children.length === 1) {
       appendOrganicConnector(
@@ -688,7 +924,9 @@ export const renderFullTree = (
     }
 
     if (children.length > 1) {
-      const busY = branchBusY(unionNode, children);
+      const busY =
+        descendantPlan?.busY ??
+        branchBusY(unionNode, children);
       const minimumChildX = children[0].x;
       const maximumChildX = children[children.length - 1].x;
       const cornerRadius = branchCornerRadius(
