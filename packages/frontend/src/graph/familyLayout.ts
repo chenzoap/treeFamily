@@ -18,6 +18,7 @@ export const FAMILY_LAYOUT = {
   familyConnectorLaneGap: 48,
   familyConnectorTopClearance: 22,
   familyConnectorBottomClearance: 30,
+  multipleDescendantFamilyReserve: 22,
   markerToPartnerCenter: 126,
 } as const;
 
@@ -45,6 +46,7 @@ export interface LayoutUnionNode {
   partnerAId: string;
   partnerBId: string | null;
   childIds: string[];
+  descendantConnectorOffsetY: number;
 }
 
 export interface LayoutBounds {
@@ -496,6 +498,13 @@ export function buildFamilyLayout(
 
     const singleUnits = units.filter((unit) => unit.kind === "single");
     const coupleUnits = units.filter((unit) => unit.kind === "couple");
+    const descendantFamilyGroupCount = units.filter(
+      (unit) => unit.children.length > 0
+    ).length;
+    const descendantConnectorOffsetY =
+      descendantFamilyGroupCount > 1
+        ? FAMILY_LAYOUT.multipleDescendantFamilyReserve
+        : 0;
 
     singleUnits.forEach((unit) => {
       unit.side = 0;
@@ -622,6 +631,8 @@ export function buildFamilyLayout(
         partnerAId: personId,
         partnerBId: unit.partnerId,
         childIds: unit.children.map((branch) => branch.rootPersonId),
+        descendantConnectorOffsetY:
+          unit.children.length > 0 ? descendantConnectorOffsetY : 0,
       };
 
       const unitPersons: RelativePersonNode[] = [];
@@ -676,7 +687,7 @@ export function buildFamilyLayout(
         const translated = translateBranch(
           childBranch,
           childCursor - childBranch.minX,
-          FAMILY_LAYOUT.generationGap,
+          FAMILY_LAYOUT.generationGap + descendantConnectorOffsetY,
           1
         );
 
@@ -917,6 +928,7 @@ export function buildFamilyLayout(
         partnerAId: anchorPersonId,
         partnerBId: partnerId,
         childIds: childBranches.map((branch) => branch.rootPersonId),
+        descendantConnectorOffsetY: 0,
       };
 
       branchParts.push({
@@ -1440,6 +1452,7 @@ export function buildFamilyLayout(
         partnerAId: unit.parentA.id,
         partnerBId: unit.parentB?.id ?? null,
         childIds: collateralPlacement?.childIds ?? [personId],
+        descendantConnectorOffsetY: 0,
       };
 
       branchParts.push(...shiftedBranches);
@@ -1703,6 +1716,7 @@ export function buildFamilyLayout(
       childIds: rootParentUnion.children.filter((childId) =>
         siblingRootPositions.has(childId)
       ),
+      descendantConnectorOffsetY: 0,
     });
 
 
@@ -1944,6 +1958,7 @@ export function buildFamilyLayout(
           childIds: childBranches.map(
             (branch) => branch.rootPersonId
           ),
+          descendantConnectorOffsetY: 0,
         });
       });
     });

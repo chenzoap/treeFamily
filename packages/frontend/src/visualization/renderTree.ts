@@ -315,17 +315,18 @@ function branchBusY(
   union: LayoutUnionNode,
   children: LayoutPersonNode[]
 ): number {
-  const childTopY = Math.min(
-    ...children.map((child) => child.y - outerHalfHeight(child))
-  );
-  const availableHeight = childTopY - union.y;
+  const baseChildTopY =
+    Math.min(
+      ...children.map((child) => child.y - outerHalfHeight(child))
+    ) - union.descendantConnectorOffsetY;
+  const availableHeight = baseChildTopY - union.y;
   const proposedDrop = availableHeight * 0.44;
   const drop = Math.max(
     MIN_BRANCH_DROP,
     Math.min(MAX_BRANCH_DROP, proposedDrop)
   );
 
-  return union.y + drop;
+  return union.y + drop + union.descendantConnectorOffsetY;
 }
 
 function intervalsOverlap(
@@ -349,6 +350,8 @@ function sameConnectorGeneration(
   const childTolerance = FAMILY_LAYOUT.personHeight + 28;
 
   return (
+    first.union.descendantConnectorOffsetY ===
+      second.union.descendantConnectorOffsetY &&
     Math.abs(first.union.y - second.union.y) <= unionTolerance &&
     Math.abs(first.childTopY - second.childTopY) <= childTolerance
   );
@@ -392,10 +395,12 @@ function buildDescendantConnectorPlans(
 
     const minimumX = children[0].x;
     const maximumX = children[children.length - 1].x;
-    const childTopY = Math.min(
-      ...children.map((child) => child.y - outerHalfHeight(child))
-    );
-    const preferredBusY = branchBusY(union, children);
+    const childTopY =
+      Math.min(
+        ...children.map((child) => child.y - outerHalfHeight(child))
+      ) - union.descendantConnectorOffsetY;
+    const preferredBusY =
+      branchBusY(union, children) - union.descendantConnectorOffsetY;
     const minimumBusY = Math.max(
       union.y + MIN_BRANCH_DROP,
       safeExitY + FAMILY_LAYOUT.familyConnectorTopClearance
@@ -506,7 +511,7 @@ function buildDescendantConnectorPlans(
           busY: Math.max(
             candidate.minimumBusY,
             Math.min(candidate.maximumBusY, candidate.preferredBusY)
-          ),
+          ) + candidate.union.descendantConnectorOffsetY,
           lane: 0,
         });
       });
@@ -535,7 +540,7 @@ function buildDescendantConnectorPlans(
       plans.set(candidate.union.id, {
         children: candidate.children,
         safeExitY: candidate.safeExitY,
-        busY,
+        busY: busY + candidate.union.descendantConnectorOffsetY,
         lane: candidate.lane,
       });
     });
