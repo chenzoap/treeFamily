@@ -11,6 +11,7 @@ const db = getFirestore();
 
 /* eslint-disable require-jsdoc */
 // === Helpers Etapa 4 ===
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 function assertAuth(request: any) {
   if (!request.auth) throw new HttpsError("unauthenticated", "Debes estar autenticado.");
   return request.auth.uid as string;
@@ -415,9 +416,9 @@ export const addRelationship = onCall(async (request) => {
   const relationshipsCol = treeRef.collection("relationships");
 
   const normalizedIds =
-    type === "PARTNER_OF"
-      ? canonPair(fromPersonId, toPersonId)
-      : ([fromPersonId, toPersonId] as [string, string]);
+    type === "PARTNER_OF" ?
+      canonPair(fromPersonId, toPersonId) :
+      ([fromPersonId, toPersonId] as [string, string]);
 
   const [normalizedFromPersonId, normalizedToPersonId] = normalizedIds;
 
@@ -470,9 +471,9 @@ export const addRelationship = onCall(async (request) => {
     type,
     fromPersonId: normalizedFromPersonId,
     toPersonId: normalizedToPersonId,
-    ...(type === "PARTNER_OF"
-      ? { relationshipStatus: "unknown" as PartnerRelationshipStatus }
-      : {}),
+    ...(type === "PARTNER_OF" ?
+      { relationshipStatus: "unknown" as PartnerRelationshipStatus } :
+      {}),
     createdAt: timestamp,
     updatedAt: timestamp,
   });
@@ -535,11 +536,11 @@ export const createUnion = onCall(async (request) => {
   const [a, b] = canonPair(personAId, personBId);
   const childLinkSourceId =
     existingChildIds.length > 0 ? childrenOwnerId : null;
-  const childLinkTargetId = childLinkSourceId
-    ? childLinkSourceId === personAId
-      ? personBId
-      : personAId
-    : null;
+  const childLinkTargetId = childLinkSourceId ?
+    childLinkSourceId === personAId ?
+      personBId :
+      personAId :
+    null;
 
   const treeRef = db.collection("trees").doc(treeId);
   const personsCol = treeRef.collection("persons");
@@ -580,16 +581,16 @@ export const createUnion = onCall(async (request) => {
     const partnerReverseSnap = await tx.get(partnerReverseQuery);
 
     const childLinkPlan =
-      childLinkSourceId && childLinkTargetId
-        ? await planExistingChildLinks({
-            tx,
-            personsCol,
-            relsCol,
-            sourceParentId: childLinkSourceId,
-            targetParentId: childLinkTargetId,
-            childIds: existingChildIds,
-          })
-        : { childIdsToLink: [], alreadyLinkedChildIds: [] };
+      childLinkSourceId && childLinkTargetId ?
+        await planExistingChildLinks({
+          tx,
+          personsCol,
+          relsCol,
+          sourceParentId: childLinkSourceId,
+          targetParentId: childLinkTargetId,
+          childIds: existingChildIds,
+        }) :
+        { childIdsToLink: [], alreadyLinkedChildIds: [] };
 
     linkedChildIds = childLinkPlan.childIdsToLink;
     alreadyLinkedChildIds = childLinkPlan.alreadyLinkedChildIds;
@@ -604,9 +605,9 @@ export const createUnion = onCall(async (request) => {
 
       const existingStatus = existingDoc.data()?.relationshipStatus;
       storedRelationshipStatus =
-        existingStatus === "current" || existingStatus === "former"
-          ? existingStatus
-          : "unknown";
+        existingStatus === "current" || existingStatus === "former" ?
+          existingStatus :
+          "unknown";
     } else {
       const relRef = relsCol.doc();
       relationshipId = relRef.id;
@@ -998,9 +999,9 @@ export const addParentToPerson = onCall(async (request) => {
     if (sameRoleAlreadyExists) {
       throw new HttpsError(
         "already-exists",
-        parentRole === "father"
-          ? "Esta persona ya tiene un padre registrado."
-          : "Esta persona ya tiene una madre registrada."
+        parentRole === "father" ?
+          "Esta persona ya tiene un padre registrado." :
+          "Esta persona ya tiene una madre registrada."
       );
     }
 
