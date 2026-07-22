@@ -39,5 +39,7 @@ firestore-debug.log
 
 # Firebase emulator local exports/debug
 .firebase-seed/
+.firebase-backups/
+.firebase-sessions/
 firebase-export-*/
 firestore-debug.log

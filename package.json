@@ -11,7 +11,7 @@
     "validate:tree": "node scripts/validate-tree-data.mjs",
     "web:dev": "npm run dev -w packages/frontend",
     "firebase:start": "firebase emulators:start --project tree-gen-chenzoap-2026 --config packages/firebase/firebase.json --only auth,firestore,functions --import=.firebase-seed --export-on-exit=.firebase-seed",
-    "firebase:start:dev": "firebase emulators:start --project tree-gen-chenzoap-2026 --config packages/firebase/firebase.dev.json --only auth,firestore,functions --import=.firebase-seed --export-on-exit=.firebase-seed",
+    "firebase:start:dev": "node scripts/firebase-start-safe.mjs",
     "firebase:start:prod": "firebase emulators:start --project tree-gen-chenzoap-2026 --config packages/firebase/firebase.json --only auth,firestore,functions",
     "dev": "concurrently -n \"WEB,FIREBASE,SEED\" -c \"cyan,yellow,green\" \"npm run web:dev\" \"npm run firebase:start:dev\" \"npm run firebase:seed\"",
     "test:unit": "npm run test -w packages/frontend",
