@@ -1,4 +1,73 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HttpsError } from "firebase-functions/v2/https";
+
+const addRelationshipFirestore = vi.hoisted(() => {
+  const ownershipGet = vi.fn();
+  const personGet = vi.fn();
+  const duplicateGet = vi.fn();
+  const relationshipSet = vi.fn();
+  const batch = vi.fn();
+  const runTransaction = vi.fn();
+  const serverTimestamp = vi.fn(() => "server-timestamp");
+  const relationshipDoc = {
+    id: "new-relationship",
+    set: relationshipSet,
+  };
+  const duplicateQuery = {
+    where: vi.fn(),
+    limit: vi.fn(),
+    get: duplicateGet,
+  };
+  duplicateQuery.where.mockReturnValue(duplicateQuery);
+  duplicateQuery.limit.mockReturnValue(duplicateQuery);
+
+  const personsCollection = {
+    doc: vi.fn(() => ({ get: personGet })),
+  };
+  const relationshipsCollection = {
+    doc: vi.fn(() => relationshipDoc),
+    where: vi.fn(() => duplicateQuery),
+  };
+  const treeRef = {
+    get: ownershipGet,
+    collection: vi.fn((name: string) =>
+      name === "persons" ? personsCollection : relationshipsCollection
+    ),
+  };
+  const treesCollection = {
+    doc: vi.fn(() => treeRef),
+  };
+  const db = {
+    collection: vi.fn(() => treesCollection),
+    batch,
+    runTransaction,
+  };
+
+  return {
+    db,
+    ownershipGet,
+    personGet,
+    duplicateGet,
+    relationshipSet,
+    batch,
+    runTransaction,
+    serverTimestamp,
+  };
+});
+
+vi.mock("firebase-admin", () => ({
+  apps: [{}],
+  initializeApp: vi.fn(),
+}));
+
+vi.mock("firebase-admin/firestore", () => ({
+  getFirestore: () => addRelationshipFirestore.db,
+  FieldValue: {
+    serverTimestamp: addRelationshipFirestore.serverTimestamp,
+  },
+}));
+
+import { addRelationship } from "./index.js";
 import {
   hasDirectedParentPath,
   normalizeParentRole,
@@ -8,6 +77,71 @@ import {
   validateNewParentLink,
   type ExistingParentLink,
 } from "./parentRelationshipPolicy.js";
+
+describe("addRelationship", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    addRelationshipFirestore.ownershipGet.mockResolvedValue({
+      exists: true,
+      data: () => ({ ownerId: "owner" }),
+    });
+    addRelationshipFirestore.personGet.mockResolvedValue({ exists: true });
+    addRelationshipFirestore.duplicateGet.mockResolvedValue({ empty: true });
+    addRelationshipFirestore.relationshipSet.mockResolvedValue(undefined);
+  });
+
+  it("bloquea PARENT_OF antes de consultar o escribir en Firestore", async () => {
+    const request = {
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        type: "PARENT_OF",
+        fromPersonId: "parent",
+        toPersonId: "child",
+      },
+    };
+
+    const error = await addRelationship.run(request as never).catch((value) => value);
+
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe("failed-precondition");
+    expect(error.details).toEqual({
+      reason: "legacy-parent-relationship-disabled",
+    });
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.ownershipGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.duplicateGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+  });
+
+  it("mantiene PARTNER_OF en el flujo normal de validación y escritura", async () => {
+    const result = await addRelationship.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        type: "PARTNER_OF",
+        fromPersonId: "person-b",
+        toPersonId: "person-a",
+      },
+    } as never);
+
+    expect(result).toEqual({ relationshipId: "new-relationship" });
+    expect(addRelationshipFirestore.ownershipGet).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.personGet).toHaveBeenCalledTimes(2);
+    expect(addRelationshipFirestore.duplicateGet).toHaveBeenCalledTimes(2);
+    expect(addRelationshipFirestore.relationshipSet).toHaveBeenCalledWith({
+      type: "PARTNER_OF",
+      fromPersonId: "person-a",
+      toPersonId: "person-b",
+      relationshipStatus: "unknown",
+      createdAt: "server-timestamp",
+      updatedAt: "server-timestamp",
+    });
+  });
+});
 
 const validateChild = ({
   parentIds = ["a"],

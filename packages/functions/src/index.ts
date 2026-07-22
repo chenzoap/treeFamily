@@ -450,6 +450,14 @@ export const addRelationship = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "Tipo de relación inválido.");
   }
 
+  if (type === "PARENT_OF") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Este flujo antiguo no permite crear relaciones parentales. Utiliza las acciones específicas para agregar padre, madre o hijo/a.",
+      { reason: "legacy-parent-relationship-disabled" }
+    );
+  }
+
   if (fromPersonId === toPersonId) {
     throw new HttpsError(
       "invalid-argument",
