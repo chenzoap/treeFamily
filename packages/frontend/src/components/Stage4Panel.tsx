@@ -3,6 +3,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../lib/firebase";
 import { useTreeStore } from "../store/useTreeStore";
 import { buildUnions } from "../graph/union";
+import type { Union } from "../types/family";
 
 type PersonPayload = {
   firstName: string;
@@ -25,7 +26,8 @@ type PersonLite = {
   secondLastName?: string;
 };
 
-type UnionLite = { id: string };
+type UnionLite = Pick<Union, "id" | "kind" | "partnerA" | "partnerB">;
+type ChildParentRole = "father" | "mother";
 type ExistingChildOption = {
   id: string;
   name: string;
@@ -268,7 +270,12 @@ function buildChildUnionOptionsForPerson(activePersonId: string, unions: UnionLi
   });
 
   const singleUnionId = `single:${activePersonId}`;
-  options.set(singleUnionId, { id: singleUnionId });
+  options.set(singleUnionId, {
+    id: singleUnionId,
+    kind: "singleParent",
+    partnerA: activePersonId,
+    partnerB: "",
+  });
 
   return Array.from(options.values()).sort((a, b) => {
     const aIsSingle = a.id.startsWith("single:");
@@ -465,6 +472,8 @@ export default function Stage4Panel() {
   const [childData, setChildData] = useState<PersonPayload>({ ...emptyPerson });
   const [parentData, setParentData] = useState<ParentPayload>({ ...emptyParent });
   const [selectedUnionId, setSelectedUnionId] = useState("");
+  const [childParentRoles, setChildParentRoles] =
+    useState<Record<string, ChildParentRole | "">>({});
   const [selectedExistingChildIds, setSelectedExistingChildIds] = useState<string[]>([]);
   const [saving, setSaving] = useState(false);
   const [parentPairSuggestion, setParentPairSuggestion] = useState<ParentPairSuggestion | null>(null);
@@ -478,6 +487,18 @@ export default function Stage4Panel() {
     if (!activePersonId) return [];
     return buildChildUnionOptionsForPerson(activePersonId, unions);
   }, [activePersonId, unions]);
+
+  const selectedChildUnion = useMemo(
+    () => childUnionOptions.find((union) => union.id === selectedUnionId) ?? null,
+    [childUnionOptions, selectedUnionId]
+  );
+
+  const selectedChildParentIds = useMemo(() => {
+    if (!selectedChildUnion) return [];
+    return selectedChildUnion.partnerB
+      ? [selectedChildUnion.partnerA, selectedChildUnion.partnerB]
+      : [selectedChildUnion.partnerA];
+  }, [selectedChildUnion]);
 
   const existingPartnerCandidates = useMemo(() => {
     if (!activePersonId) return [];
@@ -535,6 +556,7 @@ export default function Stage4Panel() {
     setExistingPartnerId("");
     setPartnerRelationshipStatus("unknown");
     setSelectedExistingChildIds([]);
+    setChildParentRoles({});
   }, [action, activePersonId]);
 
   useEffect(() => {
@@ -546,6 +568,10 @@ export default function Stage4Panel() {
     const firstOption = childUnionOptions[0]?.id ?? `single:${activePersonId}`;
     setSelectedUnionId(firstOption);
   }, [activePersonId, childUnionOptions]);
+
+  useEffect(() => {
+    setChildParentRoles({});
+  }, [selectedUnionId]);
 
   useEffect(() => {
     if (!activePersonId) return;
@@ -566,7 +592,20 @@ export default function Stage4Panel() {
     !!activePersonId &&
     !!existingPartnerId &&
     existingPartnerId !== activePersonId;
-  const canSaveChild = !!activePersonId && !!selectedUnionId && isPersonPayloadReady(childData);
+  const childParentRolesAreValid =
+    selectedChildParentIds.length > 0 &&
+    selectedChildParentIds.every((parentId) => {
+      const role = childParentRoles[parentId];
+      return role === "father" || role === "mother";
+    }) &&
+    (selectedChildParentIds.length === 1 ||
+      childParentRoles[selectedChildParentIds[0]] !==
+        childParentRoles[selectedChildParentIds[1]]);
+  const canSaveChild =
+    !!activePersonId &&
+    !!selectedUnionId &&
+    isPersonPayloadReady(childData) &&
+    childParentRolesAreValid;
   const canSaveParent = !!activePersonId && isPersonPayloadReady(parentData);
 
   const saveParent = async (parentRole: "father" | "mother") => {
@@ -707,14 +746,27 @@ export default function Stage4Panel() {
   };
 
   const saveChild = async () => {
-    if (!selectedUnionId) return;
+    if (!selectedUnionId || !childParentRolesAreValid) return;
+
+    const parentRoles = Object.fromEntries(
+      selectedChildParentIds.map((parentId) => [
+        parentId,
+        childParentRoles[parentId],
+      ])
+    ) as Record<string, ChildParentRole>;
 
     try {
       setSaving(true);
       setNotice(null);
-      await addChildToUnionFn({ treeId, unionId: selectedUnionId, childData });
+      await addChildToUnionFn({
+        treeId,
+        unionId: selectedUnionId,
+        childData,
+        parentRoles,
+      });
       setNotice({ kind: "success", message: "Hijo/a agregado al árbol." });
       setChildData({ ...emptyPerson });
+      setChildParentRoles({});
     } catch (err: unknown) {
       setNotice({ kind: "error", message: extractFirebaseCallableErrorMessage(err) });
     } finally {
@@ -1047,6 +1099,53 @@ export default function Stage4Panel() {
               ))}
             </select>
           </label>
+
+          <section className="space-y-3 rounded-2xl border border-[#D8A94F]/35 bg-[#FFF8E7] p-4">
+            <div>
+              <p className="text-sm font-bold text-[#2B2B2B]">
+                Rol de cada progenitor para este hijo
+              </p>
+              <p className="mt-1 text-xs leading-5 text-[#5B4A20]">
+                Selecciona el rol familiar de cada persona. Ningún rol se
+                asigna automáticamente.
+              </p>
+            </div>
+
+            {selectedChildParentIds.map((parentId) => (
+              <label
+                key={parentId}
+                className="block text-xs font-semibold text-slate-600"
+              >
+                {findPersonName(persons, parentId) ?? "Progenitor/a"}
+                <select
+                  className="mt-1 w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm text-[#2B2B2B] outline-none transition focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15"
+                  value={childParentRoles[parentId] ?? ""}
+                  onChange={(event) => {
+                    const role = event.target.value as ChildParentRole | "";
+                    setChildParentRoles((current) => ({
+                      ...current,
+                      [parentId]: role,
+                    }));
+                  }}
+                >
+                  <option value="">Selecciona un rol</option>
+                  <option value="father">Padre</option>
+                  <option value="mother">Madre</option>
+                </select>
+              </label>
+            ))}
+
+            {selectedChildParentIds.length === 2 &&
+              selectedChildParentIds.every(
+                (parentId) => childParentRoles[parentId]
+              ) &&
+              childParentRoles[selectedChildParentIds[0]] ===
+                childParentRoles[selectedChildParentIds[1]] && (
+                <p className="text-xs font-semibold text-red-700">
+                  Debes seleccionar un Padre y una Madre.
+                </p>
+              )}
+          </section>
 
           <PersonFields
             value={childData}

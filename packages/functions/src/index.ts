@@ -1,6 +1,11 @@
 import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import {
+  validateNewChildForExistingUnion,
+  type ExistingSharedChildParentLink,
+  type NewChildUnionValidationResult,
+} from "./parentRelationshipPolicy.js";
 
 
 if (admin.apps.length === 0) {
@@ -56,6 +61,49 @@ function parseUnionId(unionId: string): { kind: "union"; a: string; b: string } 
     return { kind: "single", a: parts[1] };
   }
   throw new HttpsError("invalid-argument", "unionId inválido");
+}
+
+function throwNewChildUnionValidationError(
+  result: Extract<NewChildUnionValidationResult, { ok: false }>
+): never {
+  const details = {
+    policyCode: result.code,
+    ...(result.roleErrorCode ? { roleErrorCode: result.roleErrorCode } : {}),
+  };
+
+  if (
+    result.code === "invalid-parent-count" ||
+    result.code === "duplicate-parent-id" ||
+    result.code === "invalid-parent-role-assignment"
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Los roles parentales no son válidos.",
+      details
+    );
+  }
+
+  if (result.code === "existing-pair-not-found") {
+    throw new HttpsError(
+      "failed-precondition",
+      "La unión seleccionada ya no existe o cambió.",
+      details
+    );
+  }
+
+  if (result.code === "parent-role-conflict") {
+    throw new HttpsError(
+      "failed-precondition",
+      "Los roles seleccionados contradicen la información familiar existente.",
+      details
+    );
+  }
+
+  throw new HttpsError(
+    "failed-precondition",
+    "La información parental existente debe corregirse antes de agregar otro hijo.",
+    details
+  );
 }
 
 function cleanString(value: unknown): string {
@@ -765,10 +813,11 @@ export const addPartnerToPerson = onCall(async (request) => {
 export const addChildToUnion = onCall(async (request) => {
   const uid = assertAuth(request);
 
-  const { treeId, unionId, childData } = request.data as {
+  const { treeId, unionId, childData, parentRoles } = request.data as {
     treeId: string;
     unionId: string;
     childData: PersonPayload;
+    parentRoles: Record<string, unknown>;
   };
 
   // Validación mínima de entrada.
@@ -776,21 +825,53 @@ export const addChildToUnion = onCall(async (request) => {
     throw new HttpsError("invalid-argument", "Faltan datos obligatorios.");
   }
 
+  if (
+    !parentRoles ||
+    typeof parentRoles !== "object" ||
+    Array.isArray(parentRoles)
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "Los roles parentales no son válidos."
+    );
+  }
+
   // Por ahora exigimos nombre y apellido para evitar personas incompletas.
   if (!childData.firstName || !childData.lastName) {
     throw new HttpsError("invalid-argument", "El hijo/a necesita nombre y apellido.");
   }
 
-  // Solo el dueño del árbol puede modificarlo.
-  await assertIsOwner(treeId, uid);
+  const treeRef = db.collection("trees").doc(treeId);
+  const treeSnap = await treeRef.get();
+  if (!treeSnap.exists) {
+    throw new HttpsError("not-found", "El árbol ya no existe.");
+  }
+  if (treeSnap.data()?.ownerId !== uid) {
+    throw new HttpsError(
+      "permission-denied",
+      "No tienes permiso sobre este árbol."
+    );
+  }
 
   // unionId puede venir como:
   // - union:personaA:personaB  -> hijo de una pareja
   // - single:personaA          -> hijo de una sola persona
   const parsed = parseUnionId(unionId);
+  const parsedParentIds = parsed.kind === "union" ?
+    [parsed.a, parsed.b] :
+    [parsed.a];
+  if (
+    parsedParentIds.some(
+      (personId) => !personId || personId.includes("/")
+    )
+  ) {
+    throw new HttpsError(
+      "invalid-argument",
+      "La unión contiene IDs de personas no válidos."
+    );
+  }
   const timestamp = FieldValue.serverTimestamp();
 
-  const treeRef = db.collection("trees").doc(treeId);
   const personsCol = treeRef.collection("persons");
   const relsCol = treeRef.collection("relationships");
 
@@ -798,14 +879,17 @@ export const addChildToUnion = onCall(async (request) => {
   // para poder usar el ID en las relaciones PARENT_OF.
   const childRef = personsCol.doc();
 
-  await db.runTransaction(async (tx) => {
+  const validation = await db.runTransaction(async (tx) => {
     // Payload normalizado del nuevo hijo/a.
     // Evitamos guardar undefined en Firestore.
     const childPayload = normalizePersonPayload(childData, uid, timestamp);
+    let parentIds: string[];
+    let parentRefs: FirebaseFirestore.DocumentReference[];
+    let hasPartnerRelationship = false;
+    let sharedChildCount = 0;
+    let existingSharedChildParentLinks: ExistingSharedChildParentLink[] = [];
 
-    // Caso 1: hijo/a agregado a una unión de pareja.
     if (parsed.kind === "union") {
-      // Canonicalizamos el par para evitar duplicados tipo A-B y B-A.
       const [parentAId, parentBId] = canonPair(parsed.a, parsed.b);
 
       if (parentAId === parentBId) {
@@ -817,17 +901,6 @@ export const addChildToUnion = onCall(async (request) => {
 
       const parentARef = personsCol.doc(parentAId);
       const parentBRef = personsCol.doc(parentBId);
-
-      // Validamos que ambos padres existan antes de crear el hijo.
-      const parentASnap = await tx.get(parentARef);
-      const parentBSnap = await tx.get(parentBRef);
-
-      if (!parentASnap.exists || !parentBSnap.exists) {
-        throw new HttpsError("not-found", "Uno o ambos padres no existen.");
-      }
-
-      // Buscamos si ya existe la relación PARTNER_OF en cualquier dirección.
-      // Esto evita crear duplicados si la pareja ya existía.
       const partnerForwardQuery = relsCol
         .where("type", "==", "PARTNER_OF")
         .where("fromPersonId", "==", parentAId)
@@ -837,103 +910,124 @@ export const addChildToUnion = onCall(async (request) => {
         .where("type", "==", "PARTNER_OF")
         .where("fromPersonId", "==", parentBId)
         .where("toPersonId", "==", parentAId);
+      const parentAChildrenQuery = relsCol
+        .where("type", "==", "PARENT_OF")
+        .where("fromPersonId", "==", parentAId);
+      const parentBChildrenQuery = relsCol
+        .where("type", "==", "PARENT_OF")
+        .where("fromPersonId", "==", parentBId);
 
-      const partnerForwardSnap = await tx.get(partnerForwardQuery);
-      const partnerReverseSnap = await tx.get(partnerReverseQuery);
+      const [
+        parentASnap,
+        parentBSnap,
+        partnerForwardSnap,
+        partnerReverseSnap,
+        parentAChildrenSnap,
+        parentBChildrenSnap,
+      ] = await Promise.all([
+        tx.get(parentARef),
+        tx.get(parentBRef),
+        tx.get(partnerForwardQuery),
+        tx.get(partnerReverseQuery),
+        tx.get(parentAChildrenQuery),
+        tx.get(parentBChildrenQuery),
+      ]);
 
-      // Creamos el hijo/a.
-      tx.set(childRef, childPayload);
-
-      // Creamos las dos relaciones PARENT_OF:
-      // padre/madre A -> hijo
-      // padre/madre B -> hijo
-      const parentARelRef = relsCol.doc();
-      const parentBRelRef = relsCol.doc();
-
-      tx.set(parentARelRef, {
-        type: "PARENT_OF",
-        fromPersonId: parentAId,
-        toPersonId: childRef.id,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-
-      tx.set(parentBRelRef, {
-        type: "PARENT_OF",
-        fromPersonId: parentBId,
-        toPersonId: childRef.id,
-        createdAt: timestamp,
-        updatedAt: timestamp,
-      });
-
-      // Si la relación PARTNER_OF no existe, la creamos dentro de la misma transacción.
-      // Así evitamos un estado donde el hijo queda con dos padres pero la pareja no existe.
-      if (partnerForwardSnap.empty && partnerReverseSnap.empty) {
-        const partnerRelRef = relsCol.doc();
-
-        tx.set(partnerRelRef, {
-          type: "PARTNER_OF",
-          fromPersonId: parentAId,
-          toPersonId: parentBId,
-          createdAt: timestamp,
-          updatedAt: timestamp,
-        });
+      if (!parentASnap.exists || !parentBSnap.exists) {
+        throw new HttpsError("not-found", "Uno o ambos padres no existen.");
       }
 
-      // Marcamos ambos padres como actualizados.
-      tx.update(parentARef, {
-        updatedAt: timestamp,
-      });
+      hasPartnerRelationship =
+        !partnerForwardSnap.empty || !partnerReverseSnap.empty;
 
-      tx.update(parentBRef, {
-        updatedAt: timestamp,
-      });
+      const parentAChildIds = new Set(
+        parentAChildrenSnap.docs.map((doc) => doc.data().toPersonId as string)
+      );
+      const sharedChildIds = Array.from(
+        new Set(
+          parentBChildrenSnap.docs
+            .map((doc) => doc.data().toPersonId as string)
+            .filter((childId) => parentAChildIds.has(childId))
+        )
+      );
+      sharedChildCount = sharedChildIds.length;
 
-      return;
-    }
+      const sharedChildParentSnaps = await Promise.all(
+        sharedChildIds.map((sharedChildId) =>
+          tx.get(
+            relsCol
+              .where("type", "==", "PARENT_OF")
+              .where("toPersonId", "==", sharedChildId)
+          )
+        )
+      );
 
-    // Caso 2: hijo/a agregado a una sola persona.
-    if (parsed.kind === "single") {
+      existingSharedChildParentLinks = sharedChildParentSnaps.flatMap(
+        (snapshot) => snapshot.docs.map((doc) => {
+          const relationship = doc.data();
+          return {
+            parentId: relationship.fromPersonId,
+            childId: relationship.toPersonId,
+            ...(relationship.parentRole !== undefined ? {
+              parentRole: relationship.parentRole,
+            } : {}),
+          } as ExistingSharedChildParentLink;
+        })
+      );
+
+      parentIds = [parentAId, parentBId];
+      parentRefs = [parentARef, parentBRef];
+    } else {
       const parentId = parsed.a;
       const parentRef = personsCol.doc(parentId);
-
-      // Validamos que la persona padre/madre exista.
       const parentSnap = await tx.get(parentRef);
 
       if (!parentSnap.exists) {
         throw new HttpsError("not-found", "El padre/madre no existe.");
       }
 
-      // Creamos el hijo/a.
-      tx.set(childRef, childPayload);
+      parentIds = [parentId];
+      parentRefs = [parentRef];
+    }
 
-      // Creamos una sola relación PARENT_OF:
-      // padre/madre -> hijo
-      const parentRelRef = relsCol.doc();
+    const result = validateNewChildForExistingUnion({
+      parentIds,
+      parentRoles,
+      hasPartnerRelationship,
+      sharedChildCount,
+      existingSharedChildParentLinks,
+    });
 
-      tx.set(parentRelRef, {
+    if (!result.ok) {
+      throwNewChildUnionValidationError(result);
+    }
+
+    tx.set(childRef, childPayload);
+
+    result.assignments.forEach((assignment) => {
+      tx.set(relsCol.doc(), {
         type: "PARENT_OF",
-        fromPersonId: parentId,
+        fromPersonId: assignment.personId,
         toPersonId: childRef.id,
+        parentRole: assignment.parentRole,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
+    });
 
-      // Marcamos el padre/madre como actualizado.
-      tx.update(parentRef, {
-        updatedAt: timestamp,
-      });
+    parentRefs.forEach((parentRef) => {
+      tx.update(parentRef, { updatedAt: timestamp });
+    });
 
-      return;
-    }
-
-    throw new HttpsError("invalid-argument", "unionId inválido.");
+    return result;
   });
 
   return {
     ok: true,
+    personId: childRef.id,
     childId: childRef.id,
     unionId,
+    resultingFamilyKind: validation.kind,
   };
 });
 
