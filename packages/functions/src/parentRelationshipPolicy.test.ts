@@ -3,10 +3,32 @@ import {
   hasDirectedParentPath,
   normalizeParentRole,
   resolveExistingPairKind,
+  validateNewChildForExistingUnion,
   validateNewChildParentRoles,
   validateNewParentLink,
   type ExistingParentLink,
 } from "./parentRelationshipPolicy.js";
+
+const validateChild = ({
+  parentIds = ["a"],
+  parentRoles = { a: "father" },
+  hasPartnerRelationship,
+  sharedChildCount,
+  existingSharedChildParentLinks = [],
+}: {
+  parentIds?: readonly string[];
+  parentRoles?: Readonly<Record<string, unknown>>;
+  hasPartnerRelationship?: boolean;
+  sharedChildCount?: number;
+  existingSharedChildParentLinks?: readonly ExistingParentLink[];
+} = {}) =>
+  validateNewChildForExistingUnion({
+    parentIds,
+    parentRoles,
+    hasPartnerRelationship,
+    sharedChildCount,
+    existingSharedChildParentLinks,
+  });
 
 const link = (
   parentId: string,
@@ -182,6 +204,381 @@ describe("resolveExistingPairKind", () => {
 
   it("rechaza sharedChildCount negativo mediante RangeError", () => {
     expect(() => resolveExistingPairKind(false, -1)).toThrow(RangeError);
+  });
+});
+
+describe("validateNewChildForExistingUnion", () => {
+  it("rechaza una lista vacía antes de validar asignaciones", () => {
+    expect(validateChild({ parentIds: [], parentRoles: {} })).toEqual({
+      ok: false,
+      code: "invalid-parent-count",
+    });
+  });
+
+  it("rechaza más de dos progenitores antes de validar asignaciones", () => {
+    expect(
+      validateChild({ parentIds: ["a", "b", "c"], parentRoles: {} })
+    ).toEqual({ ok: false, code: "invalid-parent-count" });
+  });
+
+  describe("singleParent", () => {
+    it("acepta un father explícito", () => {
+      expect(validateChild()).toEqual({
+        ok: true,
+        kind: "singleParent",
+        assignments: [{ personId: "a", parentRole: "father" }],
+      });
+    });
+
+    it("acepta una mother explícita", () => {
+      expect(validateChild({ parentRoles: { a: "mother" } })).toEqual({
+        ok: true,
+        kind: "singleParent",
+        assignments: [{ personId: "a", parentRole: "mother" }],
+      });
+    });
+
+    it("rechaza un rol ausente", () => {
+      expect(validateChild({ parentRoles: {} })).toEqual({
+        ok: false,
+        code: "invalid-parent-role-assignment",
+        roleErrorCode: "parent-role-keys-mismatch",
+      });
+    });
+
+    it("rechaza una clave incorrecta", () => {
+      expect(validateChild({ parentRoles: { b: "father" } })).toMatchObject({
+        ok: false,
+        code: "invalid-parent-role-assignment",
+      });
+    });
+
+    it("rechaza más de una clave", () => {
+      expect(
+        validateChild({ parentRoles: { a: "father", b: "mother" } })
+      ).toMatchObject({
+        ok: false,
+        code: "invalid-parent-role-assignment",
+      });
+    });
+
+    it("rechaza dos parentIds duplicados antes de validar roles", () => {
+      expect(
+        validateChild({ parentIds: ["a", "a"], parentRoles: {} })
+      ).toEqual({ ok: false, code: "duplicate-parent-id" });
+    });
+  });
+
+  describe("couple", () => {
+    it("acepta una pareja existente sin hijos previos", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { a: "father", b: "mother" },
+          hasPartnerRelationship: true,
+          sharedChildCount: 0,
+        })
+      ).toMatchObject({ ok: true, kind: "couple" });
+    });
+
+    it("acepta una pareja existente con hijos previos", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { a: "father", b: "mother" },
+          hasPartnerRelationship: true,
+          sharedChildCount: 3,
+        })
+      ).toMatchObject({ ok: true, kind: "couple" });
+    });
+
+    it("devuelve asignaciones father y mother", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { a: "father", b: "mother" },
+          hasPartnerRelationship: true,
+        })
+      ).toMatchObject({
+        assignments: [
+          { personId: "a", parentRole: "father" },
+          { personId: "b", parentRole: "mother" },
+        ],
+      });
+    });
+
+    it("ignora el orden inverso de parentIds", () => {
+      const first = validateChild({
+        parentIds: ["a", "b"],
+        parentRoles: { a: "father", b: "mother" },
+        hasPartnerRelationship: true,
+      });
+      const reversed = validateChild({
+        parentIds: ["b", "a"],
+        parentRoles: { a: "father", b: "mother" },
+        hasPartnerRelationship: true,
+      });
+      expect(reversed).toEqual(first);
+    });
+
+    it("ignora el orden inverso de las claves de roles", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { b: "mother", a: "father" },
+          hasPartnerRelationship: true,
+        })
+      ).toMatchObject({
+        assignments: [
+          { personId: "a", parentRole: "father" },
+          { personId: "b", parentRole: "mother" },
+        ],
+      });
+    });
+
+    it("rechaza roles duplicados", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { a: "father", b: "father" },
+          hasPartnerRelationship: true,
+        })
+      ).toMatchObject({
+        ok: false,
+        code: "invalid-parent-role-assignment",
+        roleErrorCode: "parent-role-occupied",
+      });
+    });
+
+    it("rechaza claves faltantes o adicionales", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { a: "father", c: "mother" },
+          hasPartnerRelationship: true,
+        })
+      ).toMatchObject({
+        ok: false,
+        code: "invalid-parent-role-assignment",
+      });
+    });
+  });
+
+  describe("coParents", () => {
+    it("acepta un hijo compartido sin pareja", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { a: "father", b: "mother" },
+          sharedChildCount: 1,
+        })
+      ).toMatchObject({ ok: true, kind: "coParents" });
+    });
+
+    it("acepta varios hijos compartidos sin pareja", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { a: "father", b: "mother" },
+          sharedChildCount: 4,
+        })
+      ).toMatchObject({ ok: true, kind: "coParents" });
+    });
+
+    it("devuelve coParents y nunca couple sin PARTNER_OF", () => {
+      const result = validateChild({
+        parentIds: ["a", "b"],
+        parentRoles: { a: "father", b: "mother" },
+        hasPartnerRelationship: false,
+        sharedChildCount: 2,
+      });
+      expect(result).toMatchObject({ ok: true, kind: "coParents" });
+      expect(result).not.toMatchObject({ kind: "couple" });
+    });
+
+    it("rechaza un par sin pareja ni hijos compartidos", () => {
+      expect(
+        validateChild({
+          parentIds: ["a", "b"],
+          parentRoles: { a: "father", b: "mother" },
+          sharedChildCount: 0,
+        })
+      ).toEqual({ ok: false, code: "existing-pair-not-found" });
+    });
+  });
+
+  describe("evidencia histórica", () => {
+    const pairInput = {
+      parentIds: ["a", "b"],
+      parentRoles: { a: "father", b: "mother" },
+      hasPartnerRelationship: true,
+    } as const;
+
+    it("ignora relaciones anteriores sin rol", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [
+            link("a", "old-1"),
+            link("b", "old-1"),
+          ],
+        })
+      ).toMatchObject({ ok: true, kind: "couple" });
+    });
+
+    it("acepta evidencia consistente A father y B mother", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [
+            link("a", "old", "father"),
+            link("b", "old", "mother"),
+          ],
+        })
+      ).toMatchObject({ ok: true });
+    });
+
+    it("completa coherentemente cuando solo A tiene father explícito", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [link("a", "old", "father")],
+        })
+      ).toMatchObject({ ok: true });
+    });
+
+    it("completa coherentemente cuando solo B tiene mother explícito", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [link("b", "old", "mother")],
+        })
+      ).toMatchObject({ ok: true });
+    });
+
+    it("rechaza roles contradictorios para una misma persona", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [
+            link("a", "old-1", "father"),
+            link("a", "old-2", "mother"),
+          ],
+        })
+      ).toEqual({ ok: false, code: "invalid-existing-parent-state" });
+    });
+
+    it("rechaza dos fathers históricos", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [
+            link("a", "old", "father"),
+            link("b", "old", "father"),
+          ],
+        })
+      ).toEqual({ ok: false, code: "invalid-existing-parent-state" });
+    });
+
+    it("rechaza dos mothers históricos", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [
+            link("a", "old", "mother"),
+            link("b", "old", "mother"),
+          ],
+        })
+      ).toEqual({ ok: false, code: "invalid-existing-parent-state" });
+    });
+
+    it("rechaza un vínculo histórico duplicado", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [
+            link("a", "old", "father"),
+            link("a", "old", "father"),
+          ],
+        })
+      ).toEqual({ ok: false, code: "invalid-existing-parent-state" });
+    });
+
+    it("rechaza un parentId ajeno a la unión", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [link("outsider", "old", "father")],
+        })
+      ).toEqual({ ok: false, code: "invalid-existing-parent-state" });
+    });
+
+    it("rechaza evidencia con más de dos progenitores explícitos", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          existingSharedChildParentLinks: [
+            link("a", "old", "father"),
+            link("b", "old", "mother"),
+            link("c", "old", "father"),
+          ],
+        })
+      ).toEqual({ ok: false, code: "invalid-existing-parent-state" });
+    });
+
+    it("rechaza una nueva asignación invertida", () => {
+      expect(
+        validateChild({
+          ...pairInput,
+          parentRoles: { a: "mother", b: "father" },
+          existingSharedChildParentLinks: [
+            link("a", "old", "father"),
+            link("b", "old", "mother"),
+          ],
+        })
+      ).toEqual({ ok: false, code: "parent-role-conflict" });
+    });
+
+    it("produce el mismo resultado con relaciones en otro orden", () => {
+      const evidence = [
+        link("a", "old-1", "father"),
+        link("b", "old-1", "mother"),
+        link("a", "old-2"),
+        link("b", "old-2"),
+      ];
+      const first = validateChild({
+        ...pairInput,
+        existingSharedChildParentLinks: evidence,
+      });
+      const reversed = validateChild({
+        ...pairInput,
+        existingSharedChildParentLinks: [...evidence].reverse(),
+      });
+      expect(reversed).toEqual(first);
+    });
+  });
+
+  it("no modifica IDs, roles ni evidencia histórica recibida", () => {
+    const parentIds = ["b", "a"];
+    const parentRoles = { b: "mother", a: "father" };
+    const evidence = [
+      link("b", "old", "mother"),
+      link("a", "old", "father"),
+    ];
+    const originalParentIds = [...parentIds];
+    const originalParentRoles = { ...parentRoles };
+    const originalEvidence = evidence.map((item) => ({ ...item }));
+
+    validateChild({
+      parentIds,
+      parentRoles,
+      hasPartnerRelationship: true,
+      existingSharedChildParentLinks: evidence,
+    });
+
+    expect(parentIds).toEqual(originalParentIds);
+    expect(parentRoles).toEqual(originalParentRoles);
+    expect(evidence).toEqual(originalEvidence);
   });
 });
 

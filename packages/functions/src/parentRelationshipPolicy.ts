@@ -24,6 +24,40 @@ export type NewChildRoleValidationResult =
 
 export type ExistingPairKind = "couple" | "coParents";
 
+export type ExistingSharedChildParentLink = {
+  parentId: string;
+  childId: string;
+  parentRole?: ParentRole;
+};
+
+export type ValidateNewChildForExistingUnionInput = {
+  parentIds: readonly string[];
+  parentRoles: Readonly<Record<string, unknown>>;
+  hasPartnerRelationship?: boolean;
+  sharedChildCount?: number;
+  existingSharedChildParentLinks?: readonly ExistingSharedChildParentLink[];
+};
+
+export type NewChildUnionValidationErrorCode =
+  | "invalid-parent-count"
+  | "duplicate-parent-id"
+  | "invalid-parent-role-assignment"
+  | "existing-pair-not-found"
+  | "invalid-existing-parent-state"
+  | "parent-role-conflict";
+
+export type NewChildUnionValidationResult =
+  | {
+      ok: true;
+      kind: "singleParent" | ExistingPairKind;
+      assignments: ParentRoleAssignment[];
+    }
+  | {
+      ok: false;
+      code: NewChildUnionValidationErrorCode;
+      roleErrorCode?: NewChildRoleErrorCode;
+    };
+
 export type ParentLinkRejectionCode =
   | "invalid-parent-role"
   | "self-parent"
@@ -130,6 +164,112 @@ export function resolveExistingPairKind(
   }
   if (hasPartnerRelationship) return "couple";
   return sharedChildCount > 0 ? "coParents" : null;
+}
+
+/**
+ * Validates and plans parent links for a new child in an existing union.
+ *
+ * Error precedence is stable: invalid parent count, duplicated parent ID,
+ * invalid role assignment, missing pair evidence, invalid historical state,
+ * historical role conflict, then success.
+ *
+ * @param {ValidateNewChildForExistingUnionInput} input Server evidence and
+ * client role assignment.
+ * @return {NewChildUnionValidationResult} A deterministic plan or error.
+ */
+export function validateNewChildForExistingUnion(
+  input: ValidateNewChildForExistingUnionInput
+): NewChildUnionValidationResult {
+  if (input.parentIds.length < 1 || input.parentIds.length > 2) {
+    return { ok: false, code: "invalid-parent-count" };
+  }
+
+  const uniqueParentIds = new Set(input.parentIds);
+  if (uniqueParentIds.size !== input.parentIds.length) {
+    return { ok: false, code: "duplicate-parent-id" };
+  }
+
+  const roleResult = validateNewChildParentRoles(
+    input.parentIds,
+    input.parentRoles
+  );
+  if (!roleResult.ok) {
+    return {
+      ok: false,
+      code: "invalid-parent-role-assignment",
+      roleErrorCode: roleResult.code,
+    };
+  }
+
+  let kind: "singleParent" | ExistingPairKind = "singleParent";
+  if (input.parentIds.length === 2) {
+    try {
+      const pairKind = resolveExistingPairKind(
+        input.hasPartnerRelationship === true,
+        input.sharedChildCount ?? 0
+      );
+      if (!pairKind) {
+        return { ok: false, code: "existing-pair-not-found" };
+      }
+      kind = pairKind;
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return { ok: false, code: "invalid-existing-parent-state" };
+      }
+      throw error;
+    }
+  }
+
+  const historicalLinks = input.existingSharedChildParentLinks ?? [];
+  const seenLinks = new Set<string>();
+  const explicitRolesByParent = new Map<string, ParentRole>();
+  const parentsByExplicitRole = new Map<ParentRole, string>();
+
+  for (const link of historicalLinks) {
+    const linkKey = `${link.parentId}\u0000${link.childId}`;
+    if (seenLinks.has(linkKey) || !uniqueParentIds.has(link.parentId)) {
+      return { ok: false, code: "invalid-existing-parent-state" };
+    }
+    seenLinks.add(linkKey);
+
+    if (link.parentRole === undefined) continue;
+    const historicalRole = normalizeParentRole(link.parentRole);
+    if (!historicalRole) {
+      return { ok: false, code: "invalid-existing-parent-state" };
+    }
+
+    const roleForParent = explicitRolesByParent.get(link.parentId);
+    if (roleForParent && roleForParent !== historicalRole) {
+      return { ok: false, code: "invalid-existing-parent-state" };
+    }
+
+    const parentForRole = parentsByExplicitRole.get(historicalRole);
+    if (parentForRole && parentForRole !== link.parentId) {
+      return { ok: false, code: "invalid-existing-parent-state" };
+    }
+
+    explicitRolesByParent.set(link.parentId, historicalRole);
+    parentsByExplicitRole.set(historicalRole, link.parentId);
+  }
+
+  if (explicitRolesByParent.size > 2) {
+    return { ok: false, code: "invalid-existing-parent-state" };
+  }
+
+  const contradictsHistory = roleResult.assignments.some((assignment) => {
+    const historicalRole = explicitRolesByParent.get(assignment.personId);
+    return historicalRole !== undefined &&
+      historicalRole !== assignment.parentRole;
+  });
+  if (contradictsHistory) {
+    return { ok: false, code: "parent-role-conflict" };
+  }
+
+  return {
+    ok: true,
+    kind,
+    assignments: roleResult.assignments,
+  };
 }
 
 /**
