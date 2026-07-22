@@ -2,9 +2,14 @@ import { onCall, HttpsError } from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import {
+  normalizeParentRole,
+  validateNewParentLink,
   validateNewChildForExistingUnion,
+  type ExistingParentLink,
   type ExistingSharedChildParentLink,
   type NewChildUnionValidationResult,
+  type ParentLinkRejectionCode,
+  type ParentRole,
 } from "./parentRelationshipPolicy.js";
 
 
@@ -143,6 +148,16 @@ type ExistingChildLinkPlan = {
   alreadyLinkedChildIds: string[];
 };
 
+function throwExistingChildLinkValidationError(
+  code: ParentLinkRejectionCode
+): never {
+  throw new HttpsError(
+    "failed-precondition",
+    "No se puede vincular uno de los hijos seleccionados con ese rol parental.",
+    { reason: code }
+  );
+}
+
 async function planExistingChildLinks({
   tx,
   personsCol,
@@ -150,6 +165,7 @@ async function planExistingChildLinks({
   sourceParentId,
   targetParentId,
   childIds,
+  parentRole,
 }: {
   tx: FirebaseFirestore.Transaction;
   personsCol: FirebaseFirestore.CollectionReference;
@@ -157,6 +173,7 @@ async function planExistingChildLinks({
   sourceParentId: string;
   targetParentId: string;
   childIds: string[];
+  parentRole: ParentRole;
 }): Promise<ExistingChildLinkPlan> {
   if (childIds.length === 0) {
     return { childIdsToLink: [], alreadyLinkedChildIds: [] };
@@ -171,6 +188,26 @@ async function planExistingChildLinks({
       tx.get(relsCol.where("toPersonId", "==", childId))
     )
   );
+  const allParentRelationshipsSnap = await tx.get(
+    relsCol.where("type", "==", "PARENT_OF")
+  );
+  const allParentLinks: ExistingParentLink[] =
+    allParentRelationshipsSnap.docs.flatMap((relationshipDoc) => {
+      const relationship = relationshipDoc.data();
+      if (
+        typeof relationship.fromPersonId !== "string" ||
+        typeof relationship.toPersonId !== "string"
+      ) {
+        return [];
+      }
+
+      const storedParentRole = normalizeParentRole(relationship.parentRole);
+      return [{
+        parentId: relationship.fromPersonId,
+        childId: relationship.toPersonId,
+        ...(storedParentRole ? { parentRole: storedParentRole } : {}),
+      }];
+    });
 
   const childIdsToLink: string[] = [];
   const alreadyLinkedChildIds: string[] = [];
@@ -183,7 +220,7 @@ async function planExistingChildLinks({
       );
     }
 
-    const parentIds = new Set<string>();
+    const existingParentLinks: ExistingParentLink[] = [];
 
     relationshipSnaps[index].docs.forEach((relationshipDoc) => {
       const relationship = relationshipDoc.data();
@@ -192,9 +229,18 @@ async function planExistingChildLinks({
         relationship.type === "PARENT_OF" &&
         typeof relationship.fromPersonId === "string"
       ) {
-        parentIds.add(relationship.fromPersonId);
+        const storedParentRole = normalizeParentRole(relationship.parentRole);
+        existingParentLinks.push({
+          parentId: relationship.fromPersonId,
+          childId,
+          ...(storedParentRole ? { parentRole: storedParentRole } : {}),
+        });
       }
     });
+
+    const parentIds = new Set(
+      existingParentLinks.map((relationship) => relationship.parentId)
+    );
 
     if (!parentIds.has(sourceParentId)) {
       throw new HttpsError(
@@ -204,19 +250,29 @@ async function planExistingChildLinks({
     }
 
     if (parentIds.has(targetParentId)) {
+      const existingTargetLink = existingParentLinks.find(
+        (relationship) => relationship.parentId === targetParentId
+      );
+      if (existingTargetLink?.parentRole !== parentRole) {
+        throwExistingChildLinkValidationError(
+          existingTargetLink?.parentRole ?
+            "parent-role-occupied" :
+            "existing-parent-role-unknown"
+        );
+      }
       alreadyLinkedChildIds.push(childId);
       return;
     }
 
-    const otherParentIds = Array.from(parentIds).filter(
-      (parentId) => parentId !== sourceParentId
-    );
-
-    if (otherParentIds.length > 0) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Uno de los hijos seleccionados ya tiene otro progenitor registrado. Cambiar esa filiación pertenece a Etapa 8."
-      );
+    const validation = validateNewParentLink({
+      parentId: targetParentId,
+      childId,
+      parentRole,
+      existingParentLinks,
+      allParentLinks,
+    });
+    if (!validation.ok) {
+      throwExistingChildLinkValidationError(validation.code);
     }
 
     childIdsToLink.push(childId);
@@ -547,6 +603,7 @@ export const createUnion = onCall(async (request) => {
     relationshipStatus: rawRelationshipStatus = "unknown",
     childrenOwnerId: rawChildrenOwnerId,
     existingChildIds: rawExistingChildIds,
+    parentRoleForExistingChildren: rawParentRoleForExistingChildren,
   } = request.data as {
     treeId: string;
     personAId: string;
@@ -554,6 +611,7 @@ export const createUnion = onCall(async (request) => {
     relationshipStatus?: PartnerRelationshipStatus;
     childrenOwnerId?: string;
     existingChildIds?: string[];
+    parentRoleForExistingChildren?: unknown;
   };
 
   if (!treeId || !personAId || !personBId) {
@@ -575,6 +633,9 @@ export const createUnion = onCall(async (request) => {
     "existingChildIds"
   );
   const childrenOwnerId = cleanString(rawChildrenOwnerId);
+  const parentRoleForExistingChildren = normalizeParentRole(
+    rawParentRoleForExistingChildren
+  );
 
   if (
     existingChildIds.length > 0 &&
@@ -587,7 +648,7 @@ export const createUnion = onCall(async (request) => {
     );
   }
 
-  if (existingChildIds.length > 0) {
+  if (existingChildIds.length > 0 && !parentRoleForExistingChildren) {
     throw new HttpsError(
       "failed-precondition",
       "Debes indicar explícitamente el rol parental de cada progenitor antes de vincular un hijo existente.",
@@ -653,6 +714,7 @@ export const createUnion = onCall(async (request) => {
           sourceParentId: childLinkSourceId,
           targetParentId: childLinkTargetId,
           childIds: existingChildIds,
+          parentRole: parentRoleForExistingChildren as ParentRole,
         }) :
         { childIdsToLink: [], alreadyLinkedChildIds: [] };
 
@@ -693,6 +755,7 @@ export const createUnion = onCall(async (request) => {
         type: "PARENT_OF",
         fromPersonId: childLinkTargetId,
         toPersonId: childId,
+        parentRole: parentRoleForExistingChildren,
         createdAt: timestamp,
         updatedAt: timestamp,
       });
@@ -730,12 +793,14 @@ export const addPartnerToPerson = onCall(async (request) => {
     partnerData,
     relationshipStatus: rawRelationshipStatus = "unknown",
     existingChildIds: rawExistingChildIds,
+    parentRoleForExistingChildren: rawParentRoleForExistingChildren,
   } = request.data as {
     treeId: string;
     personId: string;
     partnerData: PersonPayload;
     relationshipStatus?: PartnerRelationshipStatus;
     existingChildIds?: string[];
+    parentRoleForExistingChildren?: unknown;
   };
 
   if (!treeId || !personId || !partnerData) {
@@ -749,6 +814,9 @@ export const addPartnerToPerson = onCall(async (request) => {
     rawExistingChildIds,
     "existingChildIds"
   );
+  const parentRoleForExistingChildren = normalizeParentRole(
+    rawParentRoleForExistingChildren
+  );
 
   if (!partnerData.firstName || !partnerData.lastName) {
     throw new HttpsError(
@@ -757,7 +825,7 @@ export const addPartnerToPerson = onCall(async (request) => {
     );
   }
 
-  if (existingChildIds.length > 0) {
+  if (existingChildIds.length > 0 && !parentRoleForExistingChildren) {
     throw new HttpsError(
       "failed-precondition",
       "Debes indicar explícitamente el rol parental de cada progenitor antes de vincular un hijo existente.",
@@ -792,6 +860,7 @@ export const addPartnerToPerson = onCall(async (request) => {
       sourceParentId: personId,
       targetParentId: partnerRef.id,
       childIds: existingChildIds,
+      parentRole: parentRoleForExistingChildren as ParentRole,
     });
 
     linkedChildIds = childLinkPlan.childIdsToLink;
@@ -817,6 +886,7 @@ export const addPartnerToPerson = onCall(async (request) => {
         type: "PARENT_OF",
         fromPersonId: partnerRef.id,
         toPersonId: childId,
+        parentRole: parentRoleForExistingChildren,
         createdAt: timestamp,
         updatedAt: timestamp,
       });

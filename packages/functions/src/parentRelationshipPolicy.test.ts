@@ -172,6 +172,42 @@ describe("addRelationship", () => {
 });
 
 describe("vinculación legacy de hijos existentes", () => {
+  const parentRelationshipDoc = (
+    parentId: string,
+    childId: string,
+    parentRole?: "father" | "mother"
+  ) => ({
+    data: () => ({
+      type: "PARENT_OF",
+      fromPersonId: parentId,
+      toPersonId: childId,
+      ...(parentRole ? { parentRole } : {}),
+    }),
+  });
+
+  const prepareCreateUnionChildLink = (
+    existingParentDocs: ReturnType<typeof parentRelationshipDoc>[]
+  ) => {
+    addRelationshipFirestore.transactionGet
+      .mockResolvedValueOnce({ exists: true })
+      .mockResolvedValueOnce({ exists: true })
+      .mockResolvedValueOnce({ empty: true, docs: [] })
+      .mockResolvedValueOnce({ empty: true, docs: [] })
+      .mockResolvedValueOnce({ exists: true })
+      .mockResolvedValueOnce({ docs: existingParentDocs })
+      .mockResolvedValueOnce({ docs: existingParentDocs });
+  };
+
+  const prepareAddPartnerChildLink = (
+    existingParentDocs: ReturnType<typeof parentRelationshipDoc>[]
+  ) => {
+    addRelationshipFirestore.transactionGet
+      .mockResolvedValueOnce({ exists: true })
+      .mockResolvedValueOnce({ exists: true })
+      .mockResolvedValueOnce({ docs: existingParentDocs })
+      .mockResolvedValueOnce({ docs: existingParentDocs });
+  };
+
   beforeEach(() => {
     vi.clearAllMocks();
     addRelationshipFirestore.ownershipGet.mockResolvedValue({
@@ -241,6 +277,158 @@ describe("vinculación legacy de hijos existentes", () => {
     expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
     expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
     expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+  });
+
+  it.each(["parent", "", null])(
+    "createUnion rechaza el rol inválido %s sin acceder a Firestore",
+    async (parentRoleForExistingChildren) => {
+      const error = await createUnion.run({
+        auth: { uid: "owner" },
+        data: {
+          treeId: "tree",
+          personAId: "person-a",
+          personBId: "person-b",
+          childrenOwnerId: "person-a",
+          existingChildIds: ["child"],
+          parentRoleForExistingChildren,
+        },
+      } as never).catch((value) => value);
+
+      expect(error).toBeInstanceOf(HttpsError);
+      expect(error.code).toBe("failed-precondition");
+      expect(error.details).toEqual({ reason: "parent-role-required" });
+      expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+      expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+    }
+  );
+
+  it("addPartnerToPerson rechaza un rol inválido sin acceder a Firestore", async () => {
+    const error = await addPartnerToPerson.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        personId: "person-a",
+        partnerData: { firstName: "Ana", lastName: "Pérez" },
+        existingChildIds: ["child"],
+        parentRoleForExistingChildren: "unknown",
+      },
+    } as never).catch((value) => value);
+
+    expect(error.code).toBe("failed-precondition");
+    expect(error.details).toEqual({ reason: "parent-role-required" });
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each(["father", "mother"] as const)(
+    "createUnion escribe PARENT_OF con parentRole %s dentro de la transacción",
+    async (parentRoleForExistingChildren) => {
+      prepareCreateUnionChildLink([
+        parentRelationshipDoc(
+          "person-a",
+          "child",
+          parentRoleForExistingChildren === "father" ? "mother" : "father"
+        ),
+      ]);
+
+      const result = await createUnion.run({
+        auth: { uid: "owner" },
+        data: {
+          treeId: "tree",
+          personAId: "person-a",
+          personBId: "person-b",
+          childrenOwnerId: "person-a",
+          existingChildIds: ["child"],
+          parentRoleForExistingChildren,
+        },
+      } as never);
+
+      expect(result).toMatchObject({ linkedChildIds: ["child"] });
+      expect(addRelationshipFirestore.transactionSet).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          type: "PARENT_OF",
+          fromPersonId: "person-b",
+          toPersonId: "child",
+          parentRole: parentRoleForExistingChildren,
+        })
+      );
+    }
+  );
+
+  it("addPartnerToPerson crea persona, pareja y PARENT_OF con el rol explícito", async () => {
+    prepareAddPartnerChildLink([
+      parentRelationshipDoc("person-a", "child", "father"),
+    ]);
+
+    const result = await addPartnerToPerson.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        personId: "person-a",
+        partnerData: { firstName: "Ana", lastName: "Pérez" },
+        existingChildIds: ["child"],
+        parentRoleForExistingChildren: "mother",
+      },
+    } as never);
+
+    expect(result).toMatchObject({ linkedChildIds: ["child"] });
+    expect(addRelationshipFirestore.transactionSet).toHaveBeenCalledTimes(3);
+    expect(addRelationshipFirestore.transactionSet).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        type: "PARENT_OF",
+        fromPersonId: "new-partner",
+        toPersonId: "child",
+        parentRole: "mother",
+      })
+    );
+  });
+
+  it("rechaza un rol parental ya ocupado sin escrituras parciales", async () => {
+    prepareCreateUnionChildLink([
+      parentRelationshipDoc("person-a", "child", "father"),
+    ]);
+
+    const error = await createUnion.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        personAId: "person-a",
+        personBId: "person-b",
+        childrenOwnerId: "person-a",
+        existingChildIds: ["child"],
+        parentRoleForExistingChildren: "father",
+      },
+    } as never).catch((value) => value);
+
+    expect(error.details).toEqual({ reason: "parent-role-occupied" });
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rechaza un tercer progenitor sin escrituras parciales", async () => {
+    const existingParentDocs = [
+      parentRelationshipDoc("person-a", "child", "father"),
+      parentRelationshipDoc("person-c", "child", "mother"),
+    ];
+    prepareCreateUnionChildLink(existingParentDocs);
+
+    const error = await createUnion.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        personAId: "person-a",
+        personBId: "person-b",
+        childrenOwnerId: "person-a",
+        existingChildIds: ["child"],
+        parentRoleForExistingChildren: "mother",
+      },
+    } as never).catch((value) => value);
+
+    expect(error.details).toEqual({ reason: "maximum-parents" });
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
   });
 
   it("createUnion conserva el flujo de pareja sin hijos", async () => {

@@ -38,6 +38,44 @@ type QuickAction = "father" | "mother" | "partner" | "child";
 type PartnerMode = "new" | "existing";
 type PartnerRelationshipStatus = "current" | "former" | "unknown";
 
+// eslint-disable-next-line react-refresh/only-export-components
+export function canSubmitPartnerWithExistingChildren(
+  baseReady: boolean,
+  selectedChildIds: readonly string[],
+  parentRole: ChildParentRole | ""
+): boolean {
+  return baseReady &&
+    (selectedChildIds.length === 0 ||
+      parentRole === "father" ||
+      parentRole === "mother");
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function buildExistingChildrenRolePayload(
+  selectedChildIds: readonly string[],
+  parentRole: ChildParentRole | ""
+): { parentRoleForExistingChildren?: ChildParentRole } {
+  return selectedChildIds.length > 0 &&
+    (parentRole === "father" || parentRole === "mother") ?
+    { parentRoleForExistingChildren: parentRole } :
+    {};
+}
+
+// eslint-disable-next-line react-refresh/only-export-components
+export function toggleExistingChildSelection(
+  selectedChildIds: readonly string[],
+  childId: string
+): { selectedChildIds: string[]; shouldClearParentRole: boolean } {
+  const nextSelectedChildIds = selectedChildIds.includes(childId) ?
+    selectedChildIds.filter((id) => id !== childId) :
+    [...selectedChildIds, childId];
+
+  return {
+    selectedChildIds: nextSelectedChildIds,
+    shouldClearParentRole: nextSelectedChildIds.length === 0,
+  };
+}
+
 type ParentPairSuggestion = {
   childId: string;
   childName: string;
@@ -253,6 +291,17 @@ function noticeClasses(kind: Notice["kind"]) {
 }
 
 function extractFirebaseCallableErrorMessage(err: unknown): string {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    "details" in err &&
+    typeof err.details === "object" &&
+    err.details !== null &&
+    "reason" in err.details &&
+    err.details.reason === "parent-role-required"
+  ) {
+    return "Selecciona si la pareja será padre o madre de los hijos elegidos.";
+  }
   if (err instanceof Error) return err.message;
   return "Ocurrió un error inesperado.";
 }
@@ -356,6 +405,32 @@ function ExistingChildrenSelector({
         </div>
       )}
     </section>
+  );
+}
+
+export function ExistingChildrenParentRoleField({
+  value,
+  onChange,
+}: {
+  value: ChildParentRole | "";
+  onChange: (value: ChildParentRole | "") => void;
+}) {
+  return (
+    <label className="block text-xs font-semibold text-slate-600">
+      Rol parental de la pareja
+      <select
+        aria-label="Rol parental de la pareja"
+        className="mt-1 w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm text-[#2B2B2B] outline-none transition focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15"
+        value={value}
+        onChange={(event) =>
+          onChange(event.target.value as ChildParentRole | "")
+        }
+      >
+        <option value="">Selecciona un rol</option>
+        <option value="father">Padre</option>
+        <option value="mother">Madre</option>
+      </select>
+    </label>
   );
 }
 
@@ -475,6 +550,8 @@ export default function Stage4Panel() {
   const [childParentRoles, setChildParentRoles] =
     useState<Record<string, ChildParentRole | "">>({});
   const [selectedExistingChildIds, setSelectedExistingChildIds] = useState<string[]>([]);
+  const [parentRoleForExistingChildren, setParentRoleForExistingChildren] =
+    useState<ChildParentRole | "">("");
   const [saving, setSaving] = useState(false);
   const [parentPairSuggestion, setParentPairSuggestion] = useState<ParentPairSuggestion | null>(null);
 
@@ -543,11 +620,11 @@ export default function Stage4Panel() {
   ]);
 
   const toggleExistingChild = (childId: string) => {
-    setSelectedExistingChildIds((current) =>
-      current.includes(childId)
-        ? current.filter((id) => id !== childId)
-        : [...current, childId]
-    );
+    setSelectedExistingChildIds((current) => {
+      const next = toggleExistingChildSelection(current, childId);
+      if (next.shouldClearParentRole) setParentRoleForExistingChildren("");
+      return next.selectedChildIds;
+    });
   };
 
   useEffect(() => {
@@ -556,11 +633,13 @@ export default function Stage4Panel() {
     setExistingPartnerId("");
     setPartnerRelationshipStatus("unknown");
     setSelectedExistingChildIds([]);
+    setParentRoleForExistingChildren("");
     setChildParentRoles({});
   }, [action, activePersonId]);
 
   useEffect(() => {
     setSelectedExistingChildIds([]);
+    setParentRoleForExistingChildren("");
   }, [partnerMode, existingPartnerId]);
 
   useEffect(() => {
@@ -587,11 +666,18 @@ export default function Stage4Panel() {
 
   if (!treeId) return null;
 
-  const canSavePartner = !!activePersonId && isPersonPayloadReady(partnerData);
-  const canLinkExistingPartner =
+  const canSavePartner = canSubmitPartnerWithExistingChildren(
+    !!activePersonId && isPersonPayloadReady(partnerData),
+    selectedExistingChildIds,
+    parentRoleForExistingChildren
+  );
+  const canLinkExistingPartner = canSubmitPartnerWithExistingChildren(
     !!activePersonId &&
     !!existingPartnerId &&
-    existingPartnerId !== activePersonId;
+    existingPartnerId !== activePersonId,
+    selectedExistingChildIds,
+    parentRoleForExistingChildren
+  );
   const childParentRolesAreValid =
     selectedChildParentIds.length > 0 &&
     selectedChildParentIds.every((parentId) => {
@@ -664,7 +750,7 @@ export default function Stage4Panel() {
   };
 
   const savePartner = async () => {
-    if (!activePersonId) return;
+    if (!activePersonId || !canSavePartner) return;
 
     try {
       setSaving(true);
@@ -675,6 +761,10 @@ export default function Stage4Panel() {
         partnerData,
         relationshipStatus: partnerRelationshipStatus,
         existingChildIds: selectedExistingChildIds,
+        ...buildExistingChildrenRolePayload(
+          selectedExistingChildIds,
+          parentRoleForExistingChildren
+        ),
       });
       const response = result.data as { linkedChildIds?: string[] };
       const linkedCount = response.linkedChildIds?.length ?? 0;
@@ -689,6 +779,7 @@ export default function Stage4Panel() {
       });
       setPartnerData({ ...emptyPerson });
       setSelectedExistingChildIds([]);
+      setParentRoleForExistingChildren("");
     } catch (err: unknown) {
       setNotice({ kind: "error", message: extractFirebaseCallableErrorMessage(err) });
     } finally {
@@ -697,7 +788,7 @@ export default function Stage4Panel() {
   };
 
   const linkExistingPartner = async () => {
-    if (!activePersonId || !existingPartnerId) return;
+    if (!activePersonId || !existingPartnerId || !canLinkExistingPartner) return;
 
     try {
       setSaving(true);
@@ -710,6 +801,10 @@ export default function Stage4Panel() {
         relationshipStatus: partnerRelationshipStatus,
         childrenOwnerId: activePersonId,
         existingChildIds: selectedExistingChildIds,
+        ...buildExistingChildrenRolePayload(
+          selectedExistingChildIds,
+          parentRoleForExistingChildren
+        ),
       });
 
       const response = result.data as {
@@ -735,6 +830,7 @@ export default function Stage4Panel() {
 
       setExistingPartnerId("");
       setSelectedExistingChildIds([]);
+      setParentRoleForExistingChildren("");
     } catch (err: unknown) {
       setNotice({
         kind: "error",
@@ -1011,6 +1107,13 @@ export default function Stage4Panel() {
                 targetName="La nueva pareja"
               />
 
+              {selectedExistingChildIds.length > 0 && (
+                <ExistingChildrenParentRoleField
+                  value={parentRoleForExistingChildren}
+                  onChange={setParentRoleForExistingChildren}
+                />
+              )}
+
               <button
                 type="button"
                 className="w-full rounded-xl bg-[#2F5D50] px-4 py-3 font-bold text-white shadow-sm transition hover:bg-[#274D43] disabled:cursor-not-allowed disabled:opacity-50"
@@ -1054,6 +1157,13 @@ export default function Stage4Panel() {
                   onToggle={toggleExistingChild}
                   activeName={activeName}
                   targetName={existingPartnerName ?? "La persona seleccionada"}
+                />
+              )}
+
+              {selectedExistingChildIds.length > 0 && (
+                <ExistingChildrenParentRoleField
+                  value={parentRoleForExistingChildren}
+                  onChange={setParentRoleForExistingChildren}
                 />
               )}
 
