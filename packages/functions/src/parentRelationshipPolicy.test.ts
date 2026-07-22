@@ -8,6 +8,9 @@ const addRelationshipFirestore = vi.hoisted(() => {
   const relationshipSet = vi.fn();
   const batch = vi.fn();
   const runTransaction = vi.fn();
+  const transactionGet = vi.fn();
+  const transactionSet = vi.fn();
+  const transactionUpdate = vi.fn();
   const serverTimestamp = vi.fn(() => "server-timestamp");
   const relationshipDoc = {
     id: "new-relationship",
@@ -22,7 +25,10 @@ const addRelationshipFirestore = vi.hoisted(() => {
   duplicateQuery.limit.mockReturnValue(duplicateQuery);
 
   const personsCollection = {
-    doc: vi.fn(() => ({ get: personGet })),
+    doc: vi.fn((id?: string) => ({
+      id: id ?? "new-partner",
+      get: personGet,
+    })),
   };
   const relationshipsCollection = {
     doc: vi.fn(() => relationshipDoc),
@@ -51,7 +57,11 @@ const addRelationshipFirestore = vi.hoisted(() => {
     relationshipSet,
     batch,
     runTransaction,
+    transactionGet,
+    transactionSet,
+    transactionUpdate,
     serverTimestamp,
+    duplicateQuery,
   };
 });
 
@@ -67,7 +77,11 @@ vi.mock("firebase-admin/firestore", () => ({
   },
 }));
 
-import { addRelationship } from "./index.js";
+import {
+  addPartnerToPerson,
+  addRelationship,
+  createUnion,
+} from "./index.js";
 import {
   hasDirectedParentPath,
   normalizeParentRole,
@@ -88,6 +102,20 @@ describe("addRelationship", () => {
     addRelationshipFirestore.personGet.mockResolvedValue({ exists: true });
     addRelationshipFirestore.duplicateGet.mockResolvedValue({ empty: true });
     addRelationshipFirestore.relationshipSet.mockResolvedValue(undefined);
+    addRelationshipFirestore.transactionGet.mockImplementation(
+      async (reference) =>
+        reference === addRelationshipFirestore.duplicateQuery ?
+          { empty: true, docs: [] } :
+          { exists: true }
+    );
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) =>
+        callback({
+          get: addRelationshipFirestore.transactionGet,
+          set: addRelationshipFirestore.transactionSet,
+          update: addRelationshipFirestore.transactionUpdate,
+        })
+    );
   });
 
   it("bloquea PARENT_OF antes de consultar o escribir en Firestore", async () => {
@@ -140,6 +168,129 @@ describe("addRelationship", () => {
       createdAt: "server-timestamp",
       updatedAt: "server-timestamp",
     });
+  });
+});
+
+describe("vinculación legacy de hijos existentes", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    addRelationshipFirestore.ownershipGet.mockResolvedValue({
+      exists: true,
+      data: () => ({ ownerId: "owner" }),
+    });
+    addRelationshipFirestore.transactionGet.mockImplementation(
+      async (reference) =>
+        reference === addRelationshipFirestore.duplicateQuery ?
+          { empty: true, docs: [] } :
+          { exists: true }
+    );
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) =>
+        callback({
+          get: addRelationshipFirestore.transactionGet,
+          set: addRelationshipFirestore.transactionSet,
+          update: addRelationshipFirestore.transactionUpdate,
+        })
+    );
+  });
+
+  it("createUnion rechaza hijos existentes sin parentRole antes de Firestore", async () => {
+    const error = await createUnion.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        personAId: "person-a",
+        personBId: "person-b",
+        childrenOwnerId: "person-a",
+        existingChildIds: ["child"],
+      },
+    } as never).catch((value) => value);
+
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe("failed-precondition");
+    expect(error.details).toEqual({ reason: "parent-role-required" });
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.ownershipGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+  });
+
+  it("addPartnerToPerson rechaza hijos existentes sin parentRole antes de Firestore", async () => {
+    const error = await addPartnerToPerson.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        personId: "person-a",
+        partnerData: { firstName: "Ana", lastName: "Pérez" },
+        existingChildIds: ["child"],
+      },
+    } as never).catch((value) => value);
+
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe("failed-precondition");
+    expect(error.details).toEqual({ reason: "parent-role-required" });
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.ownershipGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+  });
+
+  it("createUnion conserva el flujo de pareja sin hijos", async () => {
+    const result = await createUnion.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        personAId: "person-b",
+        personBId: "person-a",
+      },
+    } as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      relationshipId: "new-relationship",
+      alreadyExisted: false,
+      linkedChildIds: [],
+    });
+    expect(addRelationshipFirestore.runTransaction).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionSet).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        type: "PARTNER_OF",
+        fromPersonId: "person-a",
+        toPersonId: "person-b",
+      })
+    );
+  });
+
+  it("addPartnerToPerson conserva el flujo de pareja nueva sin hijos", async () => {
+    const result = await addPartnerToPerson.run({
+      auth: { uid: "owner" },
+      data: {
+        treeId: "tree",
+        personId: "person-a",
+        partnerData: { firstName: "Ana", lastName: "Pérez" },
+      },
+    } as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      partnerId: "new-partner",
+      relationshipId: "new-relationship",
+      linkedChildIds: [],
+    });
+    expect(addRelationshipFirestore.runTransaction).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionSet).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ type: "PARTNER_OF" })
+    );
   });
 });
 

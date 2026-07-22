@@ -587,6 +587,14 @@ export const createUnion = onCall(async (request) => {
     );
   }
 
+  if (existingChildIds.length > 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Debes indicar explícitamente el rol parental de cada progenitor antes de vincular un hijo existente.",
+      { reason: "parent-role-required" }
+    );
+  }
+
   await assertIsOwner(treeId, uid);
 
   const [a, b] = canonPair(personAId, personBId);
@@ -746,6 +754,14 @@ export const addPartnerToPerson = onCall(async (request) => {
     throw new HttpsError(
       "invalid-argument",
       "La pareja necesita nombre y apellido."
+    );
+  }
+
+  if (existingChildIds.length > 0) {
+    throw new HttpsError(
+      "failed-precondition",
+      "Debes indicar explícitamente el rol parental de cada progenitor antes de vincular un hijo existente.",
+      { reason: "parent-role-required" }
     );
   }
 
