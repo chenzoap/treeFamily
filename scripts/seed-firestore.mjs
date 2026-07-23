@@ -1,4 +1,5 @@
 import admin from "firebase-admin";
+import { pathToFileURL } from "node:url";
 
 const TREE_ID = "demo-tree-001";
 const PROJECT_ID = "tree-gen-chenzoap-2026";
@@ -19,20 +20,73 @@ const persons = [
   { id: "p_gp2", firstName: "Rosa", lastName: "MadreRoot" }
 ];
 
+const VALID_PARENT_ROLES = new Set(["father", "mother"]);
+
+export function createParentRelationship({
+  id,
+  fromPersonId,
+  toPersonId,
+  parentRole,
+}) {
+  if (!VALID_PARENT_ROLES.has(parentRole)) {
+    throw new TypeError(
+      `La relación parental ${id ?? "(sin id)"} requiere parentRole father o mother.`,
+    );
+  }
+
+  return {
+    id,
+    type: "PARENT_OF",
+    fromPersonId,
+    toPersonId,
+    parentRole,
+  };
+}
+
 const relationships = [
   // Padres de Root
-  { id: "r_gp1_root", type: "PARENT_OF", fromPersonId: "p_gp1", toPersonId: "p_root" },
-  { id: "r_gp2_root", type: "PARENT_OF", fromPersonId: "p_gp2", toPersonId: "p_root" },
+  createParentRelationship({
+    id: "r_gp1_root",
+    fromPersonId: "p_gp1",
+    toPersonId: "p_root",
+    parentRole: "father",
+  }),
+  createParentRelationship({
+    id: "r_gp2_root",
+    fromPersonId: "p_gp2",
+    toPersonId: "p_root",
+    parentRole: "mother",
+  }),
 
   // Pareja 1 + hijo
   { id: "r_partner_root_sp1", type: "PARTNER_OF", fromPersonId: "p_root", toPersonId: "p_sp1" },
-  { id: "r_root_c1", type: "PARENT_OF", fromPersonId: "p_root", toPersonId: "p_c1" },
-  { id: "r_sp1_c1", type: "PARENT_OF", fromPersonId: "p_sp1", toPersonId: "p_c1" },
+  createParentRelationship({
+    id: "r_root_c1",
+    fromPersonId: "p_root",
+    toPersonId: "p_c1",
+    parentRole: "father",
+  }),
+  createParentRelationship({
+    id: "r_sp1_c1",
+    fromPersonId: "p_sp1",
+    toPersonId: "p_c1",
+    parentRole: "mother",
+  }),
 
   // Re-matrimonio: Pareja 2 + hijo
   { id: "r_partner_root_sp2", type: "PARTNER_OF", fromPersonId: "p_root", toPersonId: "p_sp2" },
-  { id: "r_root_c2", type: "PARENT_OF", fromPersonId: "p_root", toPersonId: "p_c2" },
-  { id: "r_sp2_c2", type: "PARENT_OF", fromPersonId: "p_sp2", toPersonId: "p_c2" }
+  createParentRelationship({
+    id: "r_root_c2",
+    fromPersonId: "p_root",
+    toPersonId: "p_c2",
+    parentRole: "father",
+  }),
+  createParentRelationship({
+    id: "r_sp2_c2",
+    fromPersonId: "p_sp2",
+    toPersonId: "p_c2",
+    parentRole: "mother",
+  }),
 ];
 
 async function setDocIfMissing(docRef, data) {
@@ -51,6 +105,11 @@ async function main() {
 
   // relationships
   for (const r of relationships) {
+    if (r.type === "PARENT_OF" && !VALID_PARENT_ROLES.has(r.parentRole)) {
+      throw new TypeError(
+        `La relación parental ${r.id} requiere parentRole father o mother.`,
+      );
+    }
     const ref = treeRef.collection("relationships").doc(r.id);
     await setDocIfMissing(ref, r);
   }
@@ -58,7 +117,12 @@ async function main() {
   console.log(`✅ Seed OK: treeId=${TREE_ID} persons=${persons.length} relationships=${relationships.length}`);
 }
 
-main().catch((e) => {
-  console.error("❌ Seed error", e);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  main().catch((e) => {
+    console.error("❌ Seed error", e);
+    process.exit(1);
+  });
+}
