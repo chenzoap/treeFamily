@@ -38,6 +38,44 @@ const compareText = (left, right) => left.localeCompare(right);
 const clone = (value) => structuredClone(value);
 const pathDepth = (path) => path.split("/").length;
 
+export const crawlFirestoreDatabase = async (database, read = null) => {
+  const documents = [];
+  const crawlCollection = async (collectionReference) => {
+    const snapshot = read
+      ? await read(collectionReference)
+      : await collectionReference.get();
+    for (const documentSnapshot of snapshot.docs) {
+      const reference = documentSnapshot.ref;
+      const subcollections = await reference.listCollections();
+      documents.push({
+        documentPath: reference.path,
+        collectionPath: collectionReference.path,
+        documentId: documentSnapshot.id,
+        parentDocumentPath:
+          reference.path.split("/").length > 2
+            ? reference.path.split("/").slice(0, -2).join("/")
+            : null,
+        depth: reference.path.split("/").length,
+        data: documentSnapshot.data(),
+        subcollectionIds: subcollections.map(({id}) => id).sort(compareText),
+      });
+      for (const subcollection of subcollections.sort((left, right) =>
+        compareText(left.id, right.id),
+      )) {
+        await crawlCollection(subcollection);
+      }
+    }
+  };
+  const roots = (await database.listCollections()).sort((left, right) =>
+    compareText(left.id, right.id),
+  );
+  for (const root of roots) await crawlCollection(root);
+  return {
+    rootCollectionIds: roots.map(({id}) => id),
+    documents,
+  };
+};
+
 export const validateLocalEmulatorHost = (value) => {
   if (typeof value !== "string" || !value.trim()) {
     return {ok: false, message: "FIRESTORE_EMULATOR_HOST es obligatorio."};
