@@ -89,12 +89,19 @@ export const validateExecutionPlan = ({
     .filter(({documentPath}) => /^trees\/[^/]+$/.test(documentPath))
     .map(({documentId}) => documentId)
     .sort(compareText);
+  const onlyExpectedEmptyRoot =
+    discoveredCollections.length === 0 ||
+    (discoveredCollections.length === 1 && discoveredCollections[0] === "trees");
   if (
     allowEmpty &&
     documents.length === 0 &&
-    discoveredCollections.length === 0
+    onlyExpectedEmptyRoot
   ) {
-    return {status: "already-empty", actualTreeIds};
+    return {
+      status: "already-empty",
+      actualTreeIds,
+      residualRootCollectionIds: [...discoveredCollections],
+    };
   }
   const errors = [];
   if (discoveredCollections.length !== 1 || discoveredCollections[0] !== "trees") {
@@ -136,7 +143,7 @@ export const validateExecutionPlan = ({
   if (plan.deletionPlan.slice(firstRoot).some(({documentPath}) =>
     documentPath.split("/").length !== 2,
   )) throw new Error("Los descendientes deben preceder a los árboles.");
-  return {status: "eligible", actualTreeIds};
+  return {status: "eligible", actualTreeIds, residualRootCollectionIds: []};
 };
 
 export const buildExecutionPlan = ({documents, discoveredCollections}) => {

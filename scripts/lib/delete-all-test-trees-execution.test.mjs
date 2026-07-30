@@ -101,15 +101,39 @@ describe("contrato, canonicalización y estado", () => {
     );
   });
 
-  it("acepta vacío idempotente y rechaza estados parciales", () => {
-    assert.equal(buildExecutionPlan({
+  it("acepta vacío idempotente sin colecciones y con trees residual", () => {
+    const withoutCollections = buildExecutionPlan({
       documents: [],
       discoveredCollections: [],
-    }).status, "already-empty");
+    });
+    assert.equal(withoutCollections.status, "already-empty");
+    assert.deepEqual(withoutCollections.residualRootCollectionIds, []);
+    assert.equal(withoutCollections.plan.summary.deleteDocuments, 0);
+    assert.equal(withoutCollections.planSha256, null);
+
+    const withExpectedResidual = buildExecutionPlan({
+      documents: [],
+      discoveredCollections: ["trees"],
+    });
+    assert.equal(withExpectedResidual.status, "already-empty");
+    assert.deepEqual(withExpectedResidual.residualRootCollectionIds, ["trees"]);
+    assert.equal(withExpectedResidual.plan.summary.deleteDocuments, 0);
+    assert.equal(withExpectedResidual.planSha256, null);
+  });
+
+  it("rechaza estados parciales y colecciones residuales inesperadas", () => {
     assert.throws(() => buildExecutionPlan({
       documents: exactDocuments().slice(1),
       discoveredCollections: ["trees"],
     }), /Cantidades|árboles|Plan/);
+    assert.throws(() => buildExecutionPlan({
+      documents: [],
+      discoveredCollections: ["profiles"],
+    }), /Colección raíz|Cantidades|árboles|Plan/);
+    assert.throws(() => buildExecutionPlan({
+      documents: [],
+      discoveredCollections: ["profiles", "trees"],
+    }), /Colección raíz|Cantidades|árboles|Plan/);
   });
 
   it("rechaza árboles, personas, relaciones, rutas y colecciones inesperadas", () => {
@@ -344,6 +368,11 @@ describe("atomicidad y Auth", () => {
       database: {runTransaction: () => assert.fail("no transaction")},
       confirmedPlanSha256: null,
       preflight: {status: "already-empty"},
+    });
+    assert.deepEqual(result, {
+      transactionAttempted: false,
+      transactionCommitted: false,
+      writesExecuted: 0,
     });
     assert.equal(result.writesExecuted, 0);
     const source = await readFile(

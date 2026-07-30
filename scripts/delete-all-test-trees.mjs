@@ -136,6 +136,7 @@ export const run = async (options, dependencies = {}) => {
       projectId: options.projectId,
       emulatorHost,
       status: preflight.status,
+      residualRootCollectionIds: preflight.residualRootCollectionIds,
       expectedTreeIds: AUTHORIZED_TREE_IDS,
       actualTreeIds: preflight.actualTreeIds,
       missingTreeIds: plan?.treeValidation?.missingTreeIds ?? [],
