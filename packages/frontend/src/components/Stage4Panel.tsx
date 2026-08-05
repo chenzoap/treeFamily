@@ -4,6 +4,7 @@ import { functions } from "../lib/firebase";
 import { useTreeStore } from "../store/useTreeStore";
 import { buildUnions } from "../graph/union";
 import type { Union } from "../types/family";
+import EditPersonForm from "./EditPersonForm";
 
 type PersonPayload = {
   firstName: string;
@@ -538,6 +539,7 @@ export default function Stage4Panel() {
 
   const [action, setAction] = useState<QuickAction>("father");
   const [notice, setNotice] = useState<UiNotice>(null);
+  const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
 
   const [partnerData, setPartnerData] = useState<PersonPayload>({ ...emptyPerson });
   const [partnerMode, setPartnerMode] = useState<PartnerMode>("new");
@@ -636,6 +638,12 @@ export default function Stage4Panel() {
     setParentRoleForExistingChildren("");
     setChildParentRoles({});
   }, [action, activePersonId]);
+
+  useEffect(() => {
+    if (editingPersonId && editingPersonId !== activePersonId) {
+      setEditingPersonId(null);
+    }
+  }, [activePersonId, editingPersonId]);
 
   useEffect(() => {
     setSelectedExistingChildIds([]);
@@ -897,6 +905,19 @@ export default function Stage4Panel() {
           Las siguientes acciones se aplicarán sobre{" "}
           <strong className="text-[#2F5D50]">{activeName}</strong>.
         </p>
+
+        {activePerson && (
+          <button
+            type="button"
+            className="mt-3 w-full rounded-xl border border-[#2F5D50]/30 bg-white px-3 py-2.5 text-sm font-bold text-[#2F5D50] transition hover:bg-[#FFFCF7]"
+            onClick={() => {
+              setNotice(null);
+              setEditingPersonId(activePerson.id);
+            }}
+          >
+            Editar persona
+          </button>
+        )}
       </section>
 
       {notice && (
@@ -943,7 +964,20 @@ export default function Stage4Panel() {
         </div>
       )}
 
-      <section>
+      {editingPersonId && activePerson && (
+        <EditPersonForm
+          key={editingPersonId}
+          treeId={treeId}
+          person={activePerson}
+          onCancel={() => setEditingPersonId(null)}
+          onSaved={() => {
+            setNotice({kind: "success", message: "Información actualizada correctamente."});
+            setEditingPersonId(null);
+          }}
+        />
+      )}
+
+      {!editingPersonId && <section>
         <div className="mb-3">
           <p className="text-sm font-bold text-[#2B2B2B]">
             ¿Qué familiar quieres agregar?
@@ -981,15 +1015,15 @@ export default function Stage4Panel() {
             );
           })}
         </div>
-      </section>
+      </section>}
 
-      {!activePersonId && (
+      {!editingPersonId && !activePersonId && (
         <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
           Selecciona una persona para agregar familiares.
         </div>
       )}
 
-      {(action === "father" || action === "mother") && (
+      {!editingPersonId && (action === "father" || action === "mother") && (
         <section className="space-y-4 border-t border-[#E5DED4] pt-5">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C97C5D]">
@@ -1031,7 +1065,7 @@ export default function Stage4Panel() {
         </section>
       )}
 
-      {action === "partner" && (
+      {!editingPersonId && action === "partner" && (
         <section className="space-y-4 border-t border-[#E5DED4] pt-5">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C97C5D]">
@@ -1180,7 +1214,7 @@ export default function Stage4Panel() {
         </section>
       )}
 
-      {action === "child" && (
+      {!editingPersonId && action === "child" && (
         <section className="space-y-4 border-t border-[#E5DED4] pt-5">
           <div>
             <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#C97C5D]">
