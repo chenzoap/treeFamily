@@ -4,6 +4,7 @@ import { HttpsError } from "firebase-functions/v2/https";
 const addRelationshipFirestore = vi.hoisted(() => {
   const ownershipGet = vi.fn();
   const personGet = vi.fn();
+  const personUpdate = vi.fn();
   const duplicateGet = vi.fn();
   const relationshipSet = vi.fn();
   const batch = vi.fn();
@@ -28,6 +29,7 @@ const addRelationshipFirestore = vi.hoisted(() => {
     doc: vi.fn((id?: string) => ({
       id: id ?? "new-partner",
       get: personGet,
+      update: personUpdate,
     })),
   };
   const relationshipsCollection = {
@@ -53,6 +55,7 @@ const addRelationshipFirestore = vi.hoisted(() => {
     db,
     ownershipGet,
     personGet,
+    personUpdate,
     duplicateGet,
     relationshipSet,
     batch,
@@ -81,6 +84,7 @@ import {
   addPartnerToPerson,
   addRelationship,
   createUnion,
+  updatePerson,
 } from "./index.js";
 import {
   hasDirectedParentPath,
@@ -91,6 +95,217 @@ import {
   validateNewParentLink,
   type ExistingParentLink,
 } from "./parentRelationshipPolicy.js";
+
+const validUpdatePersonRequest = (overrides: Record<string, unknown> = {}) => ({
+  auth: {uid: "owner"},
+  data: {
+    treeId: "tree",
+    personId: "person",
+    personData: {
+      firstName: "Ana",
+      lastName: "Pérez",
+    },
+    ...overrides,
+  },
+});
+
+describe("updatePerson", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    addRelationshipFirestore.ownershipGet.mockResolvedValue({
+      exists: true,
+      data: () => ({ownerId: "owner", rootPersonId: "person"}),
+    });
+    addRelationshipFirestore.personGet.mockResolvedValue({
+      exists: true,
+      data: () => ({
+        ownerId: "owner",
+        isRoot: true,
+        createdAt: "created-at",
+      }),
+    });
+    addRelationshipFirestore.personUpdate.mockResolvedValue(undefined);
+  });
+
+  it("rechaza usuarios no autenticados sin leer ni escribir", async () => {
+    const error = await updatePerson.run({
+      ...validUpdatePersonRequest(),
+      auth: undefined,
+    } as never).catch((value) => value);
+
+    expect(error.code).toBe("unauthenticated");
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["treeId", undefined],
+    ["treeId", "   "],
+    ["personId", undefined],
+    ["personId", "   "],
+  ])("rechaza %s ausente o vacío", async (field, value) => {
+    const error = await updatePerson.run(validUpdatePersonRequest({
+      [field]: value,
+    }) as never).catch((reason) => reason);
+
+    expect(error.code).toBe("invalid-argument");
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, null, "invalid", []])(
+    "rechaza personData inválido: %s",
+    async (personData) => {
+      const error = await updatePerson.run(validUpdatePersonRequest({
+        personData,
+      }) as never).catch((reason) => reason);
+
+      expect(error.code).toBe("invalid-argument");
+      expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["firstName", "   "],
+    ["lastName", "   "],
+  ])("rechaza %s vacío", async (field, value) => {
+    const request = validUpdatePersonRequest();
+    request.data.personData = {...request.data.personData, [field]: value};
+    const error = await updatePerson.run(request as never).catch(
+      (reason) => reason
+    );
+
+    expect(error.code).toBe("invalid-argument");
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+  });
+
+  it("rechaza árbol inexistente", async () => {
+    addRelationshipFirestore.ownershipGet.mockResolvedValue({exists: false});
+    const error = await updatePerson.run(
+      validUpdatePersonRequest() as never
+    ).catch((reason) => reason);
+
+    expect(error.code).toBe("permission-denied");
+    expect(addRelationshipFirestore.personGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rechaza usuarios que no son propietarios", async () => {
+    addRelationshipFirestore.ownershipGet.mockResolvedValue({
+      exists: true,
+      data: () => ({ownerId: "another-owner"}),
+    });
+    const error = await updatePerson.run(
+      validUpdatePersonRequest() as never
+    ).catch((reason) => reason);
+
+    expect(error.code).toBe("permission-denied");
+    expect(addRelationshipFirestore.personGet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+  });
+
+  it("rechaza personas inexistentes", async () => {
+    addRelationshipFirestore.personGet.mockResolvedValue({exists: false});
+    const error = await updatePerson.run(
+      validUpdatePersonRequest() as never
+    ).catch((reason) => reason);
+
+    expect(error.code).toBe("not-found");
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+  });
+
+  it("normaliza nombres y campos opcionales", async () => {
+    const result = await updatePerson.run(validUpdatePersonRequest({
+      personData: {
+        firstName: "  Ana María  ",
+        middleName: "  Isabel  ",
+        lastName: "  Pérez  ",
+        secondLastName: "  Gómez  ",
+        birthDate: "  1990-01-02  ",
+        birthPlace: "  Bogotá  ",
+      },
+    }) as never);
+
+    expect(result).toEqual({ok: true, personId: "person"});
+    expect(addRelationshipFirestore.personUpdate).toHaveBeenCalledWith({
+      firstName: "Ana María",
+      middleName: "Isabel",
+      lastName: "Pérez",
+      secondLastName: "Gómez",
+      birthDate: "1990-01-02",
+      birthPlace: "Bogotá",
+      updatedAt: "server-timestamp",
+    });
+  });
+
+  it("permite vaciar todos los campos opcionales", async () => {
+    await updatePerson.run(validUpdatePersonRequest({
+      personData: {
+        firstName: "Ana",
+        middleName: "   ",
+        lastName: "Pérez",
+        secondLastName: null,
+        birthDate: undefined,
+        birthPlace: "",
+      },
+    }) as never);
+
+    expect(addRelationshipFirestore.personUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        middleName: "",
+        secondLastName: "",
+        birthDate: "",
+        birthPlace: "",
+      })
+    );
+  });
+
+  it.each([true, false])(
+    "edita personas raíz y no raíz preservando campos protegidos (isRoot=%s)",
+    async (isRoot) => {
+      addRelationshipFirestore.personGet.mockResolvedValue({
+        exists: true,
+        data: () => ({ownerId: "owner", isRoot, createdAt: "created-at"}),
+      });
+
+      await updatePerson.run(validUpdatePersonRequest({
+        personData: {
+          firstName: "Ana",
+          lastName: "Pérez",
+          ownerId: "attacker",
+          isRoot: !isRoot,
+          createdAt: "attacker-created-at",
+          id: "attacker-person",
+          treeId: "attacker-tree",
+          unknownField: "attacker-value",
+        },
+      }) as never);
+
+      const update = addRelationshipFirestore.personUpdate.mock.calls[0][0];
+      expect(update).not.toHaveProperty("ownerId");
+      expect(update).not.toHaveProperty("isRoot");
+      expect(update).not.toHaveProperty("createdAt");
+      expect(update).not.toHaveProperty("id");
+      expect(update).not.toHaveProperty("treeId");
+      expect(update).not.toHaveProperty("unknownField");
+    }
+  );
+
+  it("actualiza solo la persona existente sin crear, borrar, tocar árbol o relaciones", async () => {
+    const result = await updatePerson.run(
+      validUpdatePersonRequest() as never
+    );
+
+    expect(result).toEqual({ok: true, personId: "person"});
+    expect(addRelationshipFirestore.personUpdate).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.ownershipGet).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.personGet).toHaveBeenCalledOnce();
+  });
+});
 
 describe("addRelationship", () => {
   beforeEach(() => {

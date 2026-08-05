@@ -430,6 +430,69 @@ export const getTreeData = onCall(async (request) => {
   };
 });
 
+type UpdatePersonData = {
+  firstName: string;
+  middleName?: string;
+  lastName: string;
+  secondLastName?: string;
+  birthDate?: string;
+  birthPlace?: string;
+};
+
+/**
+ * Actualiza exclusivamente los datos personales editables de una persona.
+ */
+export const updatePerson = onCall(async (request) => {
+  const uid = assertAuth(request);
+  const data = request.data as {
+    treeId?: unknown;
+    personId?: unknown;
+    personData?: unknown;
+  };
+  const treeId = assertRequiredString(data?.treeId, "Falta treeId.");
+  const personId = assertRequiredString(data?.personId, "Falta personId.");
+
+  if (
+    !data?.personData ||
+    typeof data.personData !== "object" ||
+    Array.isArray(data.personData)
+  ) {
+    throw new HttpsError("invalid-argument", "personData inválido.");
+  }
+
+  const personData = data.personData as UpdatePersonData;
+  const normalizedPersonData = {
+    firstName: assertRequiredString(
+      personData.firstName,
+      "La persona necesita nombre."
+    ),
+    middleName: cleanString(personData.middleName),
+    lastName: assertRequiredString(
+      personData.lastName,
+      "La persona necesita apellido."
+    ),
+    secondLastName: cleanString(personData.secondLastName),
+    birthDate: cleanString(personData.birthDate),
+    birthPlace: cleanString(personData.birthPlace),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+
+  await assertIsOwner(treeId, uid);
+
+  const personRef = db
+    .collection("trees")
+    .doc(treeId)
+    .collection("persons")
+    .doc(personId);
+  const personSnap = await personRef.get();
+  if (!personSnap.exists) {
+    throw new HttpsError("not-found", "La persona no existe en este árbol.");
+  }
+
+  await personRef.update(normalizedPersonData);
+  return {ok: true, personId};
+});
+
 /**
  * LEGACY / TEMPORAL
  *
