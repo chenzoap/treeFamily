@@ -12,6 +12,7 @@ const addRelationshipFirestore = vi.hoisted(() => {
   const transactionGet = vi.fn();
   const transactionSet = vi.fn();
   const transactionUpdate = vi.fn();
+  const transactionDelete = vi.fn();
   const serverTimestamp = vi.fn(() => "server-timestamp");
   const relationshipDoc = {
     id: "new-relationship",
@@ -24,6 +25,9 @@ const addRelationshipFirestore = vi.hoisted(() => {
   };
   duplicateQuery.where.mockReturnValue(duplicateQuery);
   duplicateQuery.limit.mockReturnValue(duplicateQuery);
+  const deleteFromQuery = {kind: "delete-from"};
+  const deleteToQuery = {kind: "delete-to"};
+  const personsLimitQuery = {kind: "persons-limit"};
 
   const personsCollection = {
     doc: vi.fn((id?: string) => ({
@@ -31,10 +35,15 @@ const addRelationshipFirestore = vi.hoisted(() => {
       get: personGet,
       update: personUpdate,
     })),
+    limit: vi.fn(() => personsLimitQuery),
   };
   const relationshipsCollection = {
     doc: vi.fn(() => relationshipDoc),
-    where: vi.fn(() => duplicateQuery),
+    where: vi.fn((field: string) => {
+      if (field === "fromPersonId") return deleteFromQuery;
+      if (field === "toPersonId") return deleteToQuery;
+      return duplicateQuery;
+    }),
   };
   const treeRef = {
     get: ownershipGet,
@@ -63,8 +72,13 @@ const addRelationshipFirestore = vi.hoisted(() => {
     transactionGet,
     transactionSet,
     transactionUpdate,
+    transactionDelete,
     serverTimestamp,
     duplicateQuery,
+    deleteFromQuery,
+    deleteToQuery,
+    personsLimitQuery,
+    treeRef,
   };
 });
 
@@ -84,6 +98,7 @@ import {
   addPartnerToPerson,
   addRelationship,
   createUnion,
+  deletePerson,
   updatePerson,
 } from "./index.js";
 import {
@@ -107,6 +122,475 @@ const validUpdatePersonRequest = (overrides: Record<string, unknown> = {}) => ({
     },
     ...overrides,
   },
+});
+
+type DeleteRelationshipData = {
+  type?: unknown;
+  fromPersonId?: unknown;
+  toPersonId?: unknown;
+  parentRole?: unknown;
+  relationshipStatus?: unknown;
+};
+
+const deleteRelationshipDoc = (
+  id: string,
+  data: DeleteRelationshipData
+) => ({
+  id,
+  ref: {path: `trees/tree/relationships/${id}`},
+  data: () => data,
+});
+
+const validDeletePersonRequest = (overrides: Record<string, unknown> = {}) => ({
+  auth: {uid: "owner"},
+  data: {
+    treeId: "tree",
+    personId: "person",
+    ...overrides,
+  },
+});
+
+describe("deletePerson", () => {
+  let treeData: Record<string, unknown>;
+  let personExists: boolean;
+  let personData: Record<string, unknown>;
+  let rootExists: boolean;
+  let personDocs: Array<{id: string}>;
+  let fromDocs: ReturnType<typeof deleteRelationshipDoc>[];
+  let toDocs: ReturnType<typeof deleteRelationshipDoc>[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    treeData = {ownerId: "owner", rootPersonId: "root"};
+    personExists = true;
+    personData = {isRoot: false, ownerId: "ignored-person-owner"};
+    rootExists = true;
+    personDocs = [{id: "person"}, {id: "root"}];
+    fromDocs = [];
+    toDocs = [];
+
+    addRelationshipFirestore.transactionGet.mockImplementation(
+      async (reference) => {
+        if (reference === addRelationshipFirestore.treeRef) {
+          return {exists: true, data: () => treeData};
+        }
+        if (reference === addRelationshipFirestore.personsLimitQuery) {
+          return {docs: personDocs, size: personDocs.length};
+        }
+        if (reference === addRelationshipFirestore.deleteFromQuery) {
+          return {docs: fromDocs, size: fromDocs.length};
+        }
+        if (reference === addRelationshipFirestore.deleteToQuery) {
+          return {docs: toDocs, size: toDocs.length};
+        }
+        if (reference?.id === "person") {
+          return {exists: personExists, data: () => personData};
+        }
+        if (reference?.id === "root") {
+          return {exists: rootExists, data: () => ({isRoot: true})};
+        }
+        throw new Error("Referencia de lectura inesperada");
+      }
+    );
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => callback({
+        get: addRelationshipFirestore.transactionGet,
+        delete: addRelationshipFirestore.transactionDelete,
+        set: addRelationshipFirestore.transactionSet,
+        update: addRelationshipFirestore.transactionUpdate,
+      })
+    );
+  });
+
+  const expectDeleteError = async (
+    request: ReturnType<typeof validDeletePersonRequest>,
+    code: string,
+    reason?: string
+  ) => {
+    const error = await deletePerson.run(request as never).catch(
+      (value) => value
+    );
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe(code);
+    if (reason) expect(error.details).toEqual({reason});
+    return error;
+  };
+
+  it("rechaza usuarios no autenticados antes de Firestore", async () => {
+    await expectDeleteError(
+      {...validDeletePersonRequest(), auth: undefined} as never,
+      "unauthenticated"
+    );
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["treeId", undefined],
+    ["treeId", ""],
+    ["treeId", "   "],
+    ["treeId", "tree/other"],
+    ["treeId", 42],
+    ["personId", undefined],
+    ["personId", ""],
+    ["personId", "   "],
+    ["personId", "person/other"],
+    ["personId", 42],
+  ])("rechaza payload inválido %s=%s antes de Firestore", async (field, value) => {
+    await expectDeleteError(
+      validDeletePersonRequest({[field]: value}),
+      "invalid-argument",
+      field === "treeId" ? "invalid-tree-id" : "invalid-person-id"
+    );
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+  });
+
+  it("aplica trim a ambos IDs e ignora campos adicionales", async () => {
+    const result = await deletePerson.run(validDeletePersonRequest({
+      treeId: "  tree  ",
+      personId: "  person  ",
+      ownerId: "attacker",
+      isRoot: true,
+      relationshipIds: ["unrelated"],
+      expectedRelationshipCount: 999,
+    }) as never);
+    expect(result).toEqual({
+      ok: true,
+      personId: "person",
+      deletedRelationshipCount: 0,
+    });
+  });
+
+  it("rechaza un árbol inexistente", async () => {
+    addRelationshipFirestore.transactionGet.mockResolvedValueOnce({
+      exists: false,
+    });
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "not-found",
+      "tree-not-found"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("rechaza a un usuario que no es propietario y no confía en person.ownerId", async () => {
+    treeData.ownerId = "another-owner";
+    personData.ownerId = "owner";
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "permission-denied",
+      "not-tree-owner"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("rechaza una persona inexistente", async () => {
+    personExists = false;
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "not-found",
+      "person-not-found"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("protege la persona indicada por rootPersonId", async () => {
+    treeData.rootPersonId = "person";
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "failed-precondition",
+      "root-person-protected"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("bloquea indicadores de raíz contradictorios", async () => {
+    personData.isRoot = true;
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it.each([undefined, "", "   "])(
+    "bloquea rootPersonId inválido: %s",
+    async (rootPersonId) => {
+      treeData.rootPersonId = rootPersonId;
+      await expectDeleteError(
+        validDeletePersonRequest(),
+        "failed-precondition",
+        "inconsistent-tree-data"
+      );
+      expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+    }
+  );
+
+  it("bloquea cuando la raíz contractual no existe", async () => {
+    rootExists = false;
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("protege la última persona defensivamente", async () => {
+    personDocs = [{id: "person"}];
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "failed-precondition",
+      "last-person-protected"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("elimina una persona aislada no raíz", async () => {
+    const result = await deletePerson.run(validDeletePersonRequest() as never);
+    expect(result).toEqual({
+      ok: true,
+      personId: "person",
+      deletedRelationshipCount: 0,
+    });
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionDelete.mock.calls[0][0].id)
+      .toBe("person");
+  });
+
+  it.each([
+    ["PARTNER_OF saliente", {type: "PARTNER_OF", fromPersonId: "person", toPersonId: "partner"}, "from"],
+    ["PARENT_OF entrante", {type: "PARENT_OF", fromPersonId: "parent", toPersonId: "person"}, "to"],
+    ["PARENT_OF saliente", {type: "PARENT_OF", fromPersonId: "person", toPersonId: "child"}, "from"],
+  ])("elimina una relación incidente %s", async (_name, data, direction) => {
+    const doc = deleteRelationshipDoc("incident", data);
+    if (direction === "from") fromDocs = [doc];
+    else toDocs = [doc];
+    const result = await deletePerson.run(validDeletePersonRequest() as never);
+    expect(result.deletedRelationshipCount).toBe(1);
+    expect(addRelationshipFirestore.transactionDelete)
+      .toHaveBeenCalledWith(doc.ref);
+  });
+
+  it("elimina pareja e hijos incidentes pero preserva familiares y relación ajena", async () => {
+    const partner = deleteRelationshipDoc("partner", {
+      type: "PARTNER_OF", fromPersonId: "person", toPersonId: "partner",
+    });
+    const child = deleteRelationshipDoc("child", {
+      type: "PARENT_OF", fromPersonId: "person", toPersonId: "child",
+    });
+    const parent = deleteRelationshipDoc("parent", {
+      type: "PARENT_OF", fromPersonId: "parent", toPersonId: "person",
+    });
+    const nonIncident = deleteRelationshipDoc("sibling-link", {
+      type: "PARENT_OF", fromPersonId: "parent", toPersonId: "sibling",
+    });
+    fromDocs = [partner, child];
+    toDocs = [parent];
+
+    const result = await deletePerson.run(validDeletePersonRequest() as never);
+    expect(result.deletedRelationshipCount).toBe(3);
+    expect(addRelationshipFirestore.transactionDelete.mock.calls.map(
+      ([reference]) => reference.path ?? reference.id
+    )).toEqual([
+      partner.ref.path,
+      child.ref.path,
+      parent.ref.path,
+      "person",
+    ]);
+    expect(addRelationshipFirestore.transactionDelete)
+      .not.toHaveBeenCalledWith(nonIncident.ref);
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+  });
+
+  it("preserva coprogenitor e hijos al eliminar solo vínculos incidentes", async () => {
+    const targetChild = deleteRelationshipDoc("target-child", {
+      type: "PARENT_OF", fromPersonId: "person", toPersonId: "child",
+    });
+    const coparentChild = deleteRelationshipDoc("coparent-child", {
+      type: "PARENT_OF", fromPersonId: "coparent", toPersonId: "child",
+    });
+    fromDocs = [targetChild];
+
+    await deletePerson.run(validDeletePersonRequest() as never);
+    expect(addRelationshipFirestore.transactionDelete)
+      .toHaveBeenCalledWith(targetChild.ref);
+    expect(addRelationshipFirestore.transactionDelete)
+      .not.toHaveBeenCalledWith(coparentChild.ref);
+  });
+
+  it("limita todas las lecturas y escrituras al árbol solicitado", async () => {
+    const otherTreeRelationship = {
+      path: "trees/other-tree/relationships/same-person-id",
+    };
+
+    await deletePerson.run(validDeletePersonRequest() as never);
+
+    expect(addRelationshipFirestore.db.collection)
+      .toHaveBeenCalledWith("trees");
+    expect(addRelationshipFirestore.treeRef.collection)
+      .toHaveBeenCalledWith("persons");
+    expect(addRelationshipFirestore.treeRef.collection)
+      .toHaveBeenCalledWith("relationships");
+    expect(addRelationshipFirestore.transactionDelete)
+      .not.toHaveBeenCalledWith(otherTreeRelationship);
+  });
+
+  it("deduplica por path y elimina todos los documentos duplicados incidentes", async () => {
+    const first = deleteRelationshipDoc("duplicate-1", {
+      type: "PARTNER_OF", fromPersonId: "person", toPersonId: "partner",
+    });
+    const second = deleteRelationshipDoc("duplicate-2", {
+      type: "PARTNER_OF", fromPersonId: "person", toPersonId: "partner",
+    });
+    fromDocs = [first, second];
+    toDocs = [first];
+
+    const result = await deletePerson.run(validDeletePersonRequest() as never);
+    expect(result.deletedRelationshipCount).toBe(2);
+    expect(addRelationshipFirestore.transactionDelete)
+      .toHaveBeenCalledTimes(3);
+  });
+
+  it.each([
+    ["autorrelación", {type: "PARENT_OF", fromPersonId: "person", toPersonId: "person"}],
+    ["tipo desconocido", {type: "RELATED_TO", fromPersonId: "person", toPersonId: "other"}],
+    ["from ausente", {type: "PARENT_OF", toPersonId: "person"}],
+    ["to ausente", {type: "PARENT_OF", fromPersonId: "person"}],
+    ["extremo vacío", {type: "PARENT_OF", fromPersonId: "person", toPersonId: "   "}],
+    ["sin referencia real", {type: "PARENT_OF", fromPersonId: "other", toPersonId: "child"}],
+  ])("bloquea relación incidente corrupta: %s", async (_name, data) => {
+    fromDocs = [deleteRelationshipDoc("corrupt", data)];
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("permite PARENT_OF histórico sin parentRole", async () => {
+    fromDocs = [deleteRelationshipDoc("historical-parent", {
+      type: "PARENT_OF", fromPersonId: "person", toPersonId: "child",
+    })];
+    const result = await deletePerson.run(validDeletePersonRequest() as never);
+    expect(result.deletedRelationshipCount).toBe(1);
+  });
+
+  it("permite PARTNER_OF histórico sin relationshipStatus", async () => {
+    fromDocs = [deleteRelationshipDoc("historical-partner", {
+      type: "PARTNER_OF", fromPersonId: "person", toPersonId: "partner",
+    })];
+    const result = await deletePerson.run(validDeletePersonRequest() as never);
+    expect(result.deletedRelationshipCount).toBe(1);
+  });
+
+  it("permite exactamente 400 relaciones incidentes", async () => {
+    fromDocs = Array.from({length: 400}, (_, index) =>
+      deleteRelationshipDoc(`incident-${index}`, {
+        type: "PARENT_OF",
+        fromPersonId: "person",
+        toPersonId: `child-${index}`,
+      })
+    );
+    const result = await deletePerson.run(validDeletePersonRequest() as never);
+    expect(result.deletedRelationshipCount).toBe(400);
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledTimes(401);
+  });
+
+  it("bloquea 401 relaciones antes de programar escrituras", async () => {
+    fromDocs = Array.from({length: 401}, (_, index) =>
+      deleteRelationshipDoc(`incident-${index}`, {
+        type: "PARENT_OF",
+        fromPersonId: "person",
+        toPersonId: `child-${index}`,
+      })
+    );
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "resource-exhausted",
+      "too-many-incident-relationships"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("devuelve únicamente la respuesta contractual mínima", async () => {
+    const result = await deletePerson.run(validDeletePersonRequest() as never);
+    expect(Object.keys(result).sort()).toEqual([
+      "deletedRelationshipCount", "ok", "personId",
+    ]);
+    expect(JSON.stringify(result)).not.toMatch(/owner|name|auth|relationshipIds/);
+  });
+
+  it("una segunda eliminación devuelve person-not-found sin escrituras", async () => {
+    await deletePerson.run(validDeletePersonRequest() as never);
+    vi.clearAllMocks();
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => callback({
+        get: addRelationshipFirestore.transactionGet,
+        delete: addRelationshipFirestore.transactionDelete,
+      })
+    );
+    personExists = false;
+    await expectDeleteError(
+      validDeletePersonRequest(),
+      "not-found",
+      "person-not-found"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("convierte fallos inesperados en internal sin exponer el error crudo", async () => {
+    addRelationshipFirestore.transactionGet.mockRejectedValueOnce(
+      new Error("sensitive-admin-sdk-error")
+    );
+    const error = await expectDeleteError(
+      validDeletePersonRequest(),
+      "internal"
+    );
+    expect(error.message).not.toContain("sensitive-admin-sdk-error");
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("mantiene todas las escrituras dentro de la transacción ante un fallo", async () => {
+    const incident = deleteRelationshipDoc("incident", {
+      type: "PARENT_OF", fromPersonId: "person", toPersonId: "child",
+    });
+    fromDocs = [incident];
+    addRelationshipFirestore.transactionDelete.mockImplementationOnce(() => {
+      throw new Error("induced-transaction-failure");
+    });
+    await expectDeleteError(validDeletePersonRequest(), "internal");
+    expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+  });
+
+  it("realiza todos los reads antes del primer delete", async () => {
+    fromDocs = [deleteRelationshipDoc("incident", {
+      type: "PARENT_OF", fromPersonId: "person", toPersonId: "child",
+    })];
+    await deletePerson.run(validDeletePersonRequest() as never);
+    const lastReadOrder = Math.max(
+      ...addRelationshipFirestore.transactionGet.mock.invocationCallOrder
+    );
+    const firstDeleteOrder = Math.min(
+      ...addRelationshipFirestore.transactionDelete.mock.invocationCallOrder
+    );
+    expect(lastReadOrder).toBeLessThan(firstDeleteOrder);
+    expect(addRelationshipFirestore.runTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("no contiene dependencias de Firebase Auth en la implementación", async () => {
+    const source = await import("node:fs/promises").then(({readFile}) =>
+      readFile(`${process.cwd()}/src/index.ts`, "utf8")
+    );
+    expect(source).not.toMatch(/firebase-admin\/auth|getAuth|deleteUser|auth\(\)/);
+  });
 });
 
 describe("updatePerson", () => {

@@ -19,6 +19,8 @@ if (admin.apps.length === 0) {
 
 const db = getFirestore();
 
+const MAX_DELETE_PERSON_INCIDENT_RELATIONSHIPS = 400;
+
 /* eslint-disable require-jsdoc */
 // === Helpers Etapa 4 ===
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -287,6 +289,30 @@ function assertRequiredString(value: unknown, message: string): string {
   return cleaned;
 }
 
+function assertDeletePersonId(
+  value: unknown,
+  fieldName: "treeId" | "personId"
+): string {
+  if (typeof value !== "string") {
+    throw new HttpsError(
+      "invalid-argument",
+      `${fieldName} no es válido.`,
+      {reason: `invalid-${fieldName === "treeId" ? "tree" : "person"}-id`}
+    );
+  }
+
+  const normalized = value.trim();
+  if (!normalized || normalized.includes("/")) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${fieldName} no es válido.`,
+      {reason: `invalid-${fieldName === "treeId" ? "tree" : "person"}-id`}
+    );
+  }
+
+  return normalized;
+}
+
 function normalizePersonPayload(personData: PersonPayload, uid: string, timestamp: FirebaseFirestore.FieldValue) {
   return {
     firstName: assertRequiredString(personData.firstName, "La persona necesita nombre."),
@@ -491,6 +517,168 @@ export const updatePerson = onCall(async (request) => {
 
   await personRef.update(normalizedPersonData);
   return {ok: true, personId};
+});
+
+/**
+ * Elimina una persona no raíz y todas sus relaciones incidentes.
+ */
+export const deletePerson = onCall(async (request) => {
+  const uid = assertAuth(request);
+  const data = request.data as {
+    treeId?: unknown;
+    personId?: unknown;
+  };
+  const treeId = assertDeletePersonId(data?.treeId, "treeId");
+  const personId = assertDeletePersonId(data?.personId, "personId");
+
+  try {
+    const deletedRelationshipCount = await db.runTransaction(async (tx) => {
+      const treeRef = db.collection("trees").doc(treeId);
+      const personsRef = treeRef.collection("persons");
+      const relationshipsRef = treeRef.collection("relationships");
+      const personRef = personsRef.doc(personId);
+
+      const treeSnap = await tx.get(treeRef);
+      if (!treeSnap.exists) {
+        throw new HttpsError("not-found", "El árbol no existe.", {
+          reason: "tree-not-found",
+        });
+      }
+
+      const treeData = treeSnap.data();
+      if (treeData?.ownerId !== uid) {
+        throw new HttpsError(
+          "permission-denied",
+          "No tienes permiso sobre este árbol.",
+          {reason: "not-tree-owner"}
+        );
+      }
+
+      const rootPersonId = treeData?.rootPersonId;
+      if (
+        typeof rootPersonId !== "string" ||
+        !rootPersonId.trim() ||
+        rootPersonId.includes("/")
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+
+      const personSnap = await tx.get(personRef);
+      if (!personSnap.exists) {
+        throw new HttpsError("not-found", "La persona no existe.", {
+          reason: "person-not-found",
+        });
+      }
+
+      if (rootPersonId === personId) {
+        throw new HttpsError(
+          "failed-precondition",
+          "La persona raíz no se puede eliminar.",
+          {reason: "root-person-protected"}
+        );
+      }
+
+      if (personSnap.data()?.isRoot === true) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+
+      const rootPersonRef = personsRef.doc(rootPersonId);
+      const rootPersonSnap = await tx.get(rootPersonRef);
+      if (!rootPersonSnap.exists) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+
+      const personsSnap = await tx.get(personsRef.limit(2));
+      if (!personsSnap.docs.some((doc) => doc.id !== personId)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "No se puede eliminar la última persona del árbol.",
+          {reason: "last-person-protected"}
+        );
+      }
+
+      const fromQuery = relationshipsRef.where(
+        "fromPersonId",
+        "==",
+        personId
+      );
+      const toQuery = relationshipsRef.where("toPersonId", "==", personId);
+      const fromSnap = await tx.get(fromQuery);
+      const toSnap = await tx.get(toQuery);
+      const incidentRelationships = new Map<
+        string,
+        FirebaseFirestore.QueryDocumentSnapshot
+      >();
+
+      [...fromSnap.docs, ...toSnap.docs].forEach((relationshipDoc) => {
+        incidentRelationships.set(relationshipDoc.ref.path, relationshipDoc);
+      });
+
+      for (const relationshipDoc of incidentRelationships.values()) {
+        const relationship = relationshipDoc.data();
+        const fromPersonId = relationship.fromPersonId;
+        const toPersonId = relationship.toPersonId;
+        const hasValidEndpoints =
+          typeof fromPersonId === "string" &&
+          fromPersonId.trim().length > 0 &&
+          typeof toPersonId === "string" &&
+          toPersonId.trim().length > 0;
+        const hasValidType =
+          relationship.type === "PARENT_OF" ||
+          relationship.type === "PARTNER_OF";
+        const referencesPerson =
+          fromPersonId === personId || toPersonId === personId;
+
+        if (
+          !hasValidEndpoints ||
+          !hasValidType ||
+          !referencesPerson ||
+          fromPersonId === toPersonId
+        ) {
+          throw new HttpsError(
+            "failed-precondition",
+            "El árbol contiene datos inconsistentes.",
+            {reason: "inconsistent-tree-data"}
+          );
+        }
+      }
+
+      if (
+        incidentRelationships.size >
+        MAX_DELETE_PERSON_INCIDENT_RELATIONSHIPS
+      ) {
+        throw new HttpsError(
+          "resource-exhausted",
+          "La persona tiene demasiadas relaciones para esta operación.",
+          {reason: "too-many-incident-relationships"}
+        );
+      }
+
+      incidentRelationships.forEach((relationshipDoc) => {
+        tx.delete(relationshipDoc.ref);
+      });
+      tx.delete(personRef);
+
+      return incidentRelationships.size;
+    });
+
+    return {ok: true, personId, deletedRelationshipCount};
+  } catch (error) {
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("internal", "No se pudo eliminar la persona.");
+  }
 });
 
 /**
