@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../lib/firebase";
 import { useTreeStore } from "../store/useTreeStore";
 import { buildUnions } from "../graph/union";
 import type { Union } from "../types/family";
 import EditPersonForm from "./EditPersonForm";
+import DeletePersonDialog from "./DeletePersonDialog";
+import {
+  countIncidentRelationships,
+  submitDeletePerson,
+  type DeletePersonCall,
+  type DeletePersonPayload,
+} from "./DeletePersonDialog.logic";
 
 type PersonPayload = {
   firstName: string;
@@ -23,6 +30,7 @@ type UiNotice = Notice | null;
 type PersonLite = {
   id: string;
   firstName: string;
+  middleName?: string;
   lastName: string;
   secondLastName?: string;
 };
@@ -115,7 +123,7 @@ function isPersonPayloadReady(payload: PersonPayload): boolean {
 }
 
 function personLabel(p: PersonLite): string {
-  return `${p.firstName ?? ""} ${p.lastName ?? ""} ${p.secondLastName ?? ""}`
+  return `${p.firstName ?? ""} ${p.middleName ?? ""} ${p.lastName ?? ""} ${p.secondLastName ?? ""}`
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -540,6 +548,8 @@ export default function Stage4Panel() {
   const [action, setAction] = useState<QuickAction>("father");
   const [notice, setNotice] = useState<UiNotice>(null);
   const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
+  const [personPendingDeletionId, setPersonPendingDeletionId] =
+    useState<string | null>(null);
 
   const [partnerData, setPartnerData] = useState<PersonPayload>({ ...emptyPerson });
   const [partnerMode, setPartnerMode] = useState<PartnerMode>("new");
@@ -556,11 +566,30 @@ export default function Stage4Panel() {
     useState<ChildParentRole | "">("");
   const [saving, setSaving] = useState(false);
   const [parentPairSuggestion, setParentPairSuggestion] = useState<ParentPairSuggestion | null>(null);
+  const preserveNoticeOnNextContextChangeRef = useRef(false);
 
   const addPartnerToPersonFn = useMemo(() => httpsCallable(functions, "addPartnerToPerson"), []);
   const addChildToUnionFn = useMemo(() => httpsCallable(functions, "addChildToUnion"), []);
   const addParentToPersonFn = useMemo(() => httpsCallable(functions, "addParentToPerson"), []);
   const createUnionFn = useMemo(() => httpsCallable(functions, "createUnion"), []);
+  const deletePersonFn = useMemo<DeletePersonCall>(() => {
+    const callable = httpsCallable<
+      DeletePersonPayload,
+      {ok: true; personId: string; deletedRelationshipCount: number}
+    >(functions, "deletePerson");
+    return async (payload) => callable(payload);
+  }, []);
+
+  const personPendingDeletion = personPendingDeletionId ?
+    persons.find((person) => person.id === personPendingDeletionId) ?? null :
+    null;
+  const pendingRelationshipCount = personPendingDeletionId ?
+    countIncidentRelationships(relationships, personPendingDeletionId) :
+    0;
+  const activePersonIsProtected = Boolean(
+    activePerson &&
+    (activePerson.id === rootPersonId || activePerson.isRoot === true)
+  );
 
   const childUnionOptions = useMemo(() => {
     if (!activePersonId) return [];
@@ -630,7 +659,11 @@ export default function Stage4Panel() {
   };
 
   useEffect(() => {
-    setNotice(null);
+    if (preserveNoticeOnNextContextChangeRef.current) {
+      preserveNoticeOnNextContextChangeRef.current = false;
+    } else {
+      setNotice(null);
+    }
     setParentPairSuggestion(null);
     setExistingPartnerId("");
     setPartnerRelationshipStatus("unknown");
@@ -643,7 +676,13 @@ export default function Stage4Panel() {
     if (editingPersonId && editingPersonId !== activePersonId) {
       setEditingPersonId(null);
     }
-  }, [activePersonId, editingPersonId]);
+    if (
+      personPendingDeletionId &&
+      personPendingDeletionId !== activePersonId
+    ) {
+      setPersonPendingDeletionId(null);
+    }
+  }, [activePersonId, editingPersonId, personPendingDeletionId]);
 
   useEffect(() => {
     setSelectedExistingChildIds([]);
@@ -878,6 +917,41 @@ export default function Stage4Panel() {
     }
   };
 
+  const resetPersonDependentForms = () => {
+    setEditingPersonId(null);
+    setAction("father");
+    setPartnerData({...emptyPerson});
+    setPartnerMode("new");
+    setExistingPartnerId("");
+    setPartnerRelationshipStatus("unknown");
+    setChildData({...emptyPerson});
+    setParentData({...emptyParent});
+    setSelectedUnionId("");
+    setChildParentRoles({});
+    setSelectedExistingChildIds([]);
+    setParentRoleForExistingChildren("");
+    setParentPairSuggestion(null);
+  };
+
+  const confirmDeletePerson = async () => {
+    if (!personPendingDeletion || !rootPersonId) return;
+    await submitDeletePerson({
+      call: deletePersonFn,
+      treeId,
+      personId: personPendingDeletion.id,
+      onSuccess: () => {
+        setPersonPendingDeletionId(null);
+        preserveNoticeOnNextContextChangeRef.current = true;
+        resetPersonDependentForms();
+        setSelectedPersonId(rootPersonId);
+        setNotice({
+          kind: "success",
+          message: "Persona eliminada correctamente.",
+        });
+      },
+    });
+  };
+
   return (
     <div className="space-y-5">
       <section className="rounded-2xl bg-[#F5EFE6] p-4">
@@ -907,18 +981,52 @@ export default function Stage4Panel() {
         </p>
 
         {activePerson && (
-          <button
-            type="button"
-            className="mt-3 w-full rounded-xl border border-[#2F5D50]/30 bg-white px-3 py-2.5 text-sm font-bold text-[#2F5D50] transition hover:bg-[#FFFCF7]"
-            onClick={() => {
-              setNotice(null);
-              setEditingPersonId(activePerson.id);
-            }}
-          >
-            Editar persona
-          </button>
+          <div className="mt-3 space-y-3">
+            <button
+              type="button"
+              className="w-full rounded-xl border border-[#2F5D50]/30 bg-white px-3 py-2.5 text-sm font-bold text-[#2F5D50] transition hover:bg-[#FFFCF7]"
+              onClick={() => {
+                setNotice(null);
+                setEditingPersonId(activePerson.id);
+              }}
+            >
+              Editar persona
+            </button>
+
+            <div className="border-t border-[#D8D0C4] pt-3">
+              <button
+                type="button"
+                className="w-full rounded-xl border border-red-300 bg-white px-3 py-2.5 text-sm font-bold text-red-700 transition hover:bg-red-50 disabled:cursor-not-allowed disabled:border-slate-200 disabled:text-slate-400"
+                disabled={activePersonIsProtected}
+                aria-describedby={
+                  activePersonIsProtected ? "root-delete-protection" : undefined
+                }
+                onClick={() => {
+                  if (activePersonIsProtected) return;
+                  setNotice(null);
+                  setPersonPendingDeletionId(activePerson.id);
+                }}
+              >
+                Eliminar persona
+              </button>
+              {activePersonIsProtected && (
+                <p id="root-delete-protection" className="mt-2 text-xs leading-5 text-slate-600">
+                  La persona principal del árbol no puede eliminarse.
+                </p>
+              )}
+            </div>
+          </div>
         )}
       </section>
+
+      {personPendingDeletion && (
+        <DeletePersonDialog
+          personName={personLabel(personPendingDeletion)}
+          relationshipCount={pendingRelationshipCount}
+          onCancel={() => setPersonPendingDeletionId(null)}
+          onConfirm={confirmDeletePerson}
+        />
+      )}
 
       {notice && (
         <div

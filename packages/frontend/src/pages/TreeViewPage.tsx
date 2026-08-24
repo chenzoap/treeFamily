@@ -9,6 +9,7 @@ import { type Person, type Relationship } from "../types/family";
 import TreeView from "./TreeView";
 import Stage4Panel from "../components/Stage4Panel";
 import EmptyTreeState from "../components/tree/EmptyTreeState";
+import {reconcileSelectedPersonId} from "../store/treeSelection";
 
 type TreeSummaryResponse = {
   treeId: string | null;
@@ -53,6 +54,8 @@ const TreeViewPage = () => {
     rootPersonId,
     persons,
     relationships,
+    selectedPersonId,
+    setSelectedPersonId,
   } = useTreeStore();
 
   const [authChecking, setAuthChecking] = useState(true);
@@ -144,6 +147,15 @@ const TreeViewPage = () => {
       unsubRels();
     };
   }, [treeId, setPersons, setRelationships, setRootPersonId, setLoading]);
+
+  useEffect(() => {
+    const reconciled = reconcileSelectedPersonId(
+      selectedPersonId,
+      rootPersonId,
+      persons
+    );
+    if (reconciled !== selectedPersonId) setSelectedPersonId(reconciled);
+  }, [persons, rootPersonId, selectedPersonId, setSelectedPersonId]);
 
   const rootPerson = useMemo(
     () => persons.find((person) => person.id === rootPersonId),
