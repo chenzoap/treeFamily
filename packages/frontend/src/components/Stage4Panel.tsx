@@ -6,12 +6,20 @@ import { buildUnions } from "../graph/union";
 import type { Union } from "../types/family";
 import EditPersonForm from "./EditPersonForm";
 import DeletePersonDialog from "./DeletePersonDialog";
+import DeleteRelationshipDialog from "./DeleteRelationshipDialog";
 import {
   countIncidentRelationships,
   submitDeletePerson,
   type DeletePersonCall,
   type DeletePersonPayload,
 } from "./DeletePersonDialog.logic";
+import {
+  buildIncidentRelationshipPresentations,
+  submitDeleteRelationship,
+  type DeleteRelationshipCall,
+  type DeleteRelationshipPayload,
+  type RelationshipPresentation,
+} from "./DeleteRelationshipDialog.logic";
 
 type PersonPayload = {
   firstName: string;
@@ -550,6 +558,8 @@ export default function Stage4Panel() {
   const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
   const [personPendingDeletionId, setPersonPendingDeletionId] =
     useState<string | null>(null);
+  const [relationshipPendingDeletion, setRelationshipPendingDeletion] =
+    useState<RelationshipPresentation | null>(null);
 
   const [partnerData, setPartnerData] = useState<PersonPayload>({ ...emptyPerson });
   const [partnerMode, setPartnerMode] = useState<PartnerMode>("new");
@@ -579,6 +589,13 @@ export default function Stage4Panel() {
     >(functions, "deletePerson");
     return async (payload) => callable(payload);
   }, []);
+  const deleteRelationshipFn = useMemo<DeleteRelationshipCall>(() => {
+    const callable = httpsCallable<
+      DeleteRelationshipPayload,
+      {ok: true; relationshipId: string}
+    >(functions, "deleteRelationship");
+    return async (payload) => callable(payload);
+  }, []);
 
   const personPendingDeletion = personPendingDeletionId ?
     persons.find((person) => person.id === personPendingDeletionId) ?? null :
@@ -589,6 +606,14 @@ export default function Stage4Panel() {
   const activePersonIsProtected = Boolean(
     activePerson &&
     (activePerson.id === rootPersonId || activePerson.isRoot === true)
+  );
+  const incidentRelationships = useMemo(
+    () => activePerson ? buildIncidentRelationshipPresentations(
+      activePerson,
+      persons,
+      relationships
+    ) : [],
+    [activePerson, persons, relationships]
   );
 
   const childUnionOptions = useMemo(() => {
@@ -952,6 +977,22 @@ export default function Stage4Panel() {
     });
   };
 
+  const confirmDeleteRelationship = async () => {
+    if (!relationshipPendingDeletion) return;
+    await submitDeleteRelationship({
+      call: deleteRelationshipFn,
+      treeId,
+      relationshipId: relationshipPendingDeletion.relationshipId,
+      onSuccess: () => {
+        setRelationshipPendingDeletion(null);
+        setNotice({
+          kind: "success",
+          message: "Relación eliminada correctamente.",
+        });
+      },
+    });
+  };
+
   return (
     <div className="space-y-5">
       <section className="rounded-2xl bg-[#F5EFE6] p-4">
@@ -1019,12 +1060,56 @@ export default function Stage4Panel() {
         )}
       </section>
 
+      <section className="rounded-2xl border border-[#E6DCCF] bg-white p-4">
+        <p className="text-xs font-bold uppercase tracking-[0.14em] text-[#2F5D50]">
+          Relaciones de esta persona
+        </p>
+        {activePerson && incidentRelationships.length > 0 ? (
+          <ul className="mt-3 space-y-2">
+            {incidentRelationships.map((relationship) => (
+              <li key={relationship.relationshipId} className="rounded-xl border border-[#E6DCCF] bg-[#FFFCF7] p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-semibold text-slate-800">{relationship.label}</p>
+                    {relationship.statusLabel && (
+                      <p className="mt-1 text-xs text-slate-500">{relationship.statusLabel}</p>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-50"
+                    onClick={() => {
+                      setNotice(null);
+                      setRelationshipPendingDeletion(relationship);
+                    }}
+                  >
+                    Quitar relación
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="mt-3 text-sm text-slate-600">
+            Esta persona no tiene relaciones registradas.
+          </p>
+        )}
+      </section>
+
       {personPendingDeletion && (
         <DeletePersonDialog
           personName={personLabel(personPendingDeletion)}
           relationshipCount={pendingRelationshipCount}
           onCancel={() => setPersonPendingDeletionId(null)}
           onConfirm={confirmDeletePerson}
+        />
+      )}
+
+      {relationshipPendingDeletion && (
+        <DeleteRelationshipDialog
+          relationship={relationshipPendingDeletion}
+          onCancel={() => setRelationshipPendingDeletion(null)}
+          onConfirm={confirmDeleteRelationship}
         />
       )}
 
