@@ -32,13 +32,18 @@ const addRelationshipFirestore = vi.hoisted(() => {
   const personsCollection = {
     doc: vi.fn((id?: string) => ({
       id: id ?? "new-partner",
+      kind: "person",
       get: personGet,
       update: personUpdate,
     })),
     limit: vi.fn(() => personsLimitQuery),
   };
   const relationshipsCollection = {
-    doc: vi.fn(() => relationshipDoc),
+    doc: vi.fn((id?: string) => id ? ({
+      id,
+      kind: "relationship",
+      path: `trees/tree/relationships/${id}`,
+    }) : relationshipDoc),
     where: vi.fn((field: string) => {
       if (field === "fromPersonId") return deleteFromQuery;
       if (field === "toPersonId") return deleteToQuery;
@@ -99,6 +104,7 @@ import {
   addRelationship,
   createUnion,
   deletePerson,
+  deleteRelationship,
   updatePerson,
 } from "./index.js";
 import {
@@ -590,6 +596,359 @@ describe("deletePerson", () => {
       readFile(`${process.cwd()}/src/index.ts`, "utf8")
     );
     expect(source).not.toMatch(/firebase-admin\/auth|getAuth|deleteUser|auth\(\)/);
+  });
+});
+
+const validDeleteRelationshipRequest = (
+  overrides: Record<string, unknown> = {}
+) => ({
+  auth: {uid: "owner"},
+  data: {
+    treeId: "tree",
+    relationshipId: "target-relationship",
+    ...overrides,
+  },
+});
+
+describe("deleteRelationship", () => {
+  let treeExists: boolean;
+  let treeData: Record<string, unknown>;
+  let relationshipExists: boolean;
+  let relationshipData: DeleteRelationshipData;
+  let existingPersonIds: Set<string>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    treeExists = true;
+    treeData = {
+      ownerId: "owner",
+      rootPersonId: "root",
+      updatedAt: "unchanged-tree-timestamp",
+    };
+    relationshipExists = true;
+    relationshipData = {
+      type: "PARENT_OF",
+      fromPersonId: "parent",
+      toPersonId: "child",
+      parentRole: "father",
+    };
+    existingPersonIds = new Set(["root", "parent", "child", "partner"]);
+
+    addRelationshipFirestore.transactionGet.mockImplementation(
+      async (reference) => {
+        if (reference === addRelationshipFirestore.treeRef) {
+          return {exists: treeExists, data: () => treeData};
+        }
+        if (reference?.kind === "relationship") {
+          return {
+            exists: relationshipExists,
+            data: () => relationshipData,
+          };
+        }
+        if (reference?.kind === "person") {
+          return {
+            exists: existingPersonIds.has(reference.id),
+            data: () => ({ownerId: "ignored-person-owner"}),
+          };
+        }
+        throw new Error("Referencia de lectura inesperada");
+      }
+    );
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => callback({
+        get: addRelationshipFirestore.transactionGet,
+        delete: addRelationshipFirestore.transactionDelete,
+        set: addRelationshipFirestore.transactionSet,
+        update: addRelationshipFirestore.transactionUpdate,
+      })
+    );
+  });
+
+  const expectDeleteRelationshipError = async (
+    request: ReturnType<typeof validDeleteRelationshipRequest>,
+    code: string,
+    reason?: string
+  ) => {
+    const error = await deleteRelationship.run(request as never).catch(
+      (value) => value
+    );
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe(code);
+    if (reason) expect(error.details).toEqual({reason});
+    return error;
+  };
+
+  it("exige Auth antes de acceder a Firestore", async () => {
+    await expectDeleteRelationshipError(
+      {...validDeleteRelationshipRequest(), auth: undefined} as never,
+      "unauthenticated"
+    );
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["treeId", undefined, "invalid-tree-id"],
+    ["treeId", 42, "invalid-tree-id"],
+    ["treeId", "", "invalid-tree-id"],
+    ["treeId", "   ", "invalid-tree-id"],
+    ["treeId", "tree/other", "invalid-tree-id"],
+    ["relationshipId", undefined, "invalid-relationship-id"],
+    ["relationshipId", 42, "invalid-relationship-id"],
+    ["relationshipId", "", "invalid-relationship-id"],
+    ["relationshipId", "   ", "invalid-relationship-id"],
+    ["relationshipId", "rel/other", "invalid-relationship-id"],
+  ])("rechaza payload inválido %s=%s", async (field, value, reason) => {
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest({[field]: value}),
+      "invalid-argument",
+      reason
+    );
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+  });
+
+  it("normaliza IDs e ignora campos adicionales no autoritativos", async () => {
+    const result = await deleteRelationship.run(validDeleteRelationshipRequest({
+      treeId: "  tree  ",
+      relationshipId: "  target-relationship  ",
+      type: "PARTNER_OF",
+      fromPersonId: "attacker",
+      toPersonId: "victim",
+      parentRole: "mother",
+      relationshipStatus: "former",
+      ownerId: "attacker",
+    }) as never);
+    expect(result).toEqual({ok: true, relationshipId: "target-relationship"});
+    expect(addRelationshipFirestore.transactionDelete.mock.calls[0][0])
+      .toMatchObject({id: "target-relationship", kind: "relationship"});
+  });
+
+  it("rechaza un árbol inexistente", async () => {
+    treeExists = false;
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(), "not-found", "tree-not-found"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("autoriza exclusivamente mediante tree.ownerId", async () => {
+    treeData.ownerId = "another-owner";
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(),
+      "permission-denied",
+      "not-tree-owner"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("no toca el mismo relationshipId textual de otro árbol", async () => {
+    await deleteRelationship.run(validDeleteRelationshipRequest() as never);
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionDelete)
+      .not.toHaveBeenCalledWith({
+        id: "target-relationship",
+        path: "trees/other/relationships/target-relationship",
+      });
+    expect(addRelationshipFirestore.db.collection).toHaveBeenCalledWith("trees");
+  });
+
+  it("rechaza una relación inexistente", async () => {
+    relationshipExists = false;
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(),
+      "not-found",
+      "relationship-not-found"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["PARENT_OF father", {type: "PARENT_OF", fromPersonId: "parent", toPersonId: "child", parentRole: "father"}],
+    ["PARENT_OF mother", {type: "PARENT_OF", fromPersonId: "parent", toPersonId: "child", parentRole: "mother"}],
+    ["PARENT_OF histórico", {type: "PARENT_OF", fromPersonId: "parent", toPersonId: "child"}],
+    ["PARTNER_OF current", {type: "PARTNER_OF", fromPersonId: "parent", toPersonId: "partner", relationshipStatus: "current"}],
+    ["PARTNER_OF former", {type: "PARTNER_OF", fromPersonId: "parent", toPersonId: "partner", relationshipStatus: "former"}],
+    ["PARTNER_OF unknown", {type: "PARTNER_OF", fromPersonId: "parent", toPersonId: "partner", relationshipStatus: "unknown"}],
+    ["PARTNER_OF histórico", {type: "PARTNER_OF", fromPersonId: "parent", toPersonId: "partner"}],
+    ["root como progenitor", {type: "PARENT_OF", fromPersonId: "root", toPersonId: "child", parentRole: "father"}],
+    ["root como hijo", {type: "PARENT_OF", fromPersonId: "parent", toPersonId: "root", parentRole: "father"}],
+    ["root en pareja", {type: "PARTNER_OF", fromPersonId: "root", toPersonId: "partner", relationshipStatus: "current"}],
+  ])("elimina una relación válida: %s", async (_name, data) => {
+    relationshipData = data;
+    const result = await deleteRelationship.run(
+      validDeleteRelationshipRequest() as never
+    );
+    expect(result).toEqual({ok: true, relationshipId: "target-relationship"});
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["última relación", []],
+    ["PARENT_OF único", []],
+    ["dos progenitores", ["other-parent-link"]],
+    ["progenitor con varios hijos", ["other-child-1", "other-child-2"]],
+    ["pareja con hijos compartidos", ["parent-a-child", "parent-b-child"]],
+    ["pareja con hijo de un miembro", ["parent-a-child"]],
+  ])("elimina solo el objetivo en escenario %s", async (_name, preservedIds) => {
+    const preservedRefs = preservedIds.map((id) => ({id, kind: "relationship"}));
+    await deleteRelationship.run(validDeleteRelationshipRequest() as never);
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledOnce();
+    preservedRefs.forEach((reference) => {
+      expect(addRelationshipFirestore.transactionDelete)
+        .not.toHaveBeenCalledWith(reference);
+    });
+  });
+
+  it.each([
+    ["PARENT_OF duplicado", "duplicate-parent"],
+    ["PARTNER_OF duplicado directo", "duplicate-partner"],
+    ["PARTNER_OF inverso histórico", "reverse-partner"],
+  ])("preserva equivalentes: %s", async (_name, duplicateId) => {
+    await deleteRelationship.run(validDeleteRelationshipRequest() as never);
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionDelete)
+      .not.toHaveBeenCalledWith({id: duplicateId, kind: "relationship"});
+  });
+
+  it.each([
+    ["from ausente", {type: "PARENT_OF", toPersonId: "child"}],
+    ["from vacío", {type: "PARENT_OF", fromPersonId: "   ", toPersonId: "child"}],
+    ["to ausente", {type: "PARENT_OF", fromPersonId: "parent"}],
+    ["to vacío", {type: "PARENT_OF", fromPersonId: "parent", toPersonId: "   "}],
+    ["autorrelación", {type: "PARENT_OF", fromPersonId: "parent", toPersonId: "parent"}],
+    ["tipo desconocido", {type: "RELATED_TO", fromPersonId: "parent", toPersonId: "child"}],
+    ["parentRole inválido", {type: "PARENT_OF", fromPersonId: "parent", toPersonId: "child", parentRole: "guardian"}],
+    ["relationshipStatus inválido", {type: "PARTNER_OF", fromPersonId: "parent", toPersonId: "partner", relationshipStatus: "married"}],
+  ])("bloquea relación corrupta: %s", async (_name, data) => {
+    relationshipData = data;
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["from inexistente", ["root", "child", "partner"]],
+    ["to inexistente", ["root", "parent", "partner"]],
+    ["ambos inexistentes", ["root", "partner"]],
+  ])("bloquea endpoints huérfanos: %s", async (_name, ids) => {
+    existingPersonIds = new Set(ids);
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("preserva personas, árbol, timestamps y toda relación no objetivo", async () => {
+    const originalTreeData = {...treeData};
+    await deleteRelationship.run(validDeleteRelationshipRequest() as never);
+    expect(treeData).toEqual(originalTreeData);
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+  });
+
+  it("devuelve únicamente la respuesta contractual mínima", async () => {
+    const result = await deleteRelationship.run(
+      validDeleteRelationshipRequest() as never
+    );
+    expect(Object.keys(result).sort()).toEqual(["ok", "relationshipId"]);
+    expect(JSON.stringify(result)).not.toMatch(
+      /type|fromPersonId|toPersonId|owner|parentRole|relationshipStatus|auth/
+    );
+  });
+
+  it("una segunda eliminación devuelve relationship-not-found", async () => {
+    await deleteRelationship.run(validDeleteRelationshipRequest() as never);
+    vi.clearAllMocks();
+    relationshipExists = false;
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => callback({
+        get: addRelationshipFirestore.transactionGet,
+        delete: addRelationshipFirestore.transactionDelete,
+      })
+    );
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(),
+      "not-found",
+      "relationship-not-found"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("convierte errores inesperados a internal sin filtrar detalles", async () => {
+    addRelationshipFirestore.transactionGet.mockRejectedValueOnce(
+      new Error("sensitive-admin-sdk-error")
+    );
+    const error = await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(), "internal"
+    );
+    expect(error.message).not.toContain("sensitive-admin-sdk-error");
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("completa todas las lecturas antes del único delete exacto", async () => {
+    await deleteRelationship.run(validDeleteRelationshipRequest() as never);
+    const lastReadOrder = Math.max(
+      ...addRelationshipFirestore.transactionGet.mock.invocationCallOrder
+    );
+    const deleteOrder = addRelationshipFirestore.transactionDelete
+      .mock.invocationCallOrder[0];
+    expect(lastReadOrder).toBeLessThan(deleteOrder);
+    expect(addRelationshipFirestore.transactionGet).toHaveBeenCalledTimes(4);
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionDelete.mock.calls[0][0])
+      .toMatchObject({id: "target-relationship", kind: "relationship"});
+    expect(addRelationshipFirestore.runTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("un fallo previo al delete produce cero escrituras", async () => {
+    existingPersonIds.delete("child");
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+  });
+
+  it("mantiene la operación dentro de una única transacción", async () => {
+    addRelationshipFirestore.transactionDelete.mockImplementationOnce(() => {
+      throw new Error("induced-transaction-failure");
+    });
+    await expectDeleteRelationshipError(
+      validDeleteRelationshipRequest(), "internal"
+    );
+    expect(addRelationshipFirestore.runTransaction).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
+  });
+
+  it("no usa APIs prohibidas ni escrituras adicionales", async () => {
+    const source = await import("node:fs/promises").then(({readFile}) =>
+      readFile(`${process.cwd()}/src/index.ts`, "utf8")
+    );
+    const implementation = source.slice(
+      source.indexOf("export const deleteRelationship"),
+      source.indexOf("/**\n * LEGACY / TEMPORAL", source.indexOf("export const deleteRelationship"))
+    );
+    expect(implementation).not.toMatch(
+      /firebase-admin\/auth|getAuth|deleteUser|auth\(\)|WriteBatch|BulkWriter|collectionGroup|tx\.set|tx\.update/
+    );
+    expect(implementation).not.toMatch(
+      /personsRef\.doc\([^)]*\)\.delete|treeRef\.update/
+    );
   });
 });
 

@@ -313,6 +313,30 @@ function assertDeletePersonId(
   return normalized;
 }
 
+function assertDeleteRelationshipId(
+  value: unknown,
+  fieldName: "treeId" | "relationshipId"
+): string {
+  if (typeof value !== "string") {
+    throw new HttpsError(
+      "invalid-argument",
+      `${fieldName} no es válido.`,
+      {reason: `invalid-${fieldName === "treeId" ? "tree" : "relationship"}-id`}
+    );
+  }
+
+  const normalized = value.trim();
+  if (!normalized || normalized.includes("/")) {
+    throw new HttpsError(
+      "invalid-argument",
+      `${fieldName} no es válido.`,
+      {reason: `invalid-${fieldName === "treeId" ? "tree" : "relationship"}-id`}
+    );
+  }
+
+  return normalized;
+}
+
 function normalizePersonPayload(personData: PersonPayload, uid: string, timestamp: FirebaseFirestore.FieldValue) {
   return {
     firstName: assertRequiredString(personData.firstName, "La persona necesita nombre."),
@@ -678,6 +702,112 @@ export const deletePerson = onCall(async (request) => {
   } catch (error) {
     if (error instanceof HttpsError) throw error;
     throw new HttpsError("internal", "No se pudo eliminar la persona.");
+  }
+});
+
+/**
+ * Elimina exactamente una relación válida sin modificar personas ni árbol.
+ */
+export const deleteRelationship = onCall(async (request) => {
+  const uid = assertAuth(request);
+  const data = request.data as {
+    treeId?: unknown;
+    relationshipId?: unknown;
+  };
+  const treeId = assertDeleteRelationshipId(data?.treeId, "treeId");
+  const relationshipId = assertDeleteRelationshipId(
+    data?.relationshipId,
+    "relationshipId"
+  );
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const treeRef = db.collection("trees").doc(treeId);
+      const personsRef = treeRef.collection("persons");
+      const relationshipRef = treeRef
+        .collection("relationships")
+        .doc(relationshipId);
+
+      const treeSnap = await tx.get(treeRef);
+      if (!treeSnap.exists) {
+        throw new HttpsError("not-found", "El árbol no existe.", {
+          reason: "tree-not-found",
+        });
+      }
+
+      if (treeSnap.data()?.ownerId !== uid) {
+        throw new HttpsError(
+          "permission-denied",
+          "No tienes permiso sobre este árbol.",
+          {reason: "not-tree-owner"}
+        );
+      }
+
+      const relationshipSnap = await tx.get(relationshipRef);
+      if (!relationshipSnap.exists) {
+        throw new HttpsError("not-found", "La relación no existe.", {
+          reason: "relationship-not-found",
+        });
+      }
+
+      const relationship = relationshipSnap.data();
+      const fromPersonId = relationship?.fromPersonId;
+      const toPersonId = relationship?.toPersonId;
+      const type = relationship?.type;
+      const parentRole = relationship?.parentRole;
+      const relationshipStatus = relationship?.relationshipStatus;
+      const hasValidEndpoints =
+        typeof fromPersonId === "string" &&
+        fromPersonId.trim().length > 0 &&
+        typeof toPersonId === "string" &&
+        toPersonId.trim().length > 0 &&
+        fromPersonId !== toPersonId;
+      const hasValidType = type === "PARENT_OF" || type === "PARTNER_OF";
+      const hasValidParentRole =
+        type !== "PARENT_OF" ||
+        parentRole === undefined ||
+        parentRole === "father" ||
+        parentRole === "mother";
+      const hasValidRelationshipStatus =
+        type !== "PARTNER_OF" ||
+        relationshipStatus === undefined ||
+        relationshipStatus === "current" ||
+        relationshipStatus === "former" ||
+        relationshipStatus === "unknown";
+
+      if (
+        !hasValidEndpoints ||
+        !hasValidType ||
+        !hasValidParentRole ||
+        !hasValidRelationshipStatus
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+
+      const fromPersonRef = personsRef.doc(fromPersonId);
+      const toPersonRef = personsRef.doc(toPersonId);
+      const fromPersonSnap = await tx.get(fromPersonRef);
+      const toPersonSnap = await tx.get(toPersonRef);
+
+      if (!fromPersonSnap.exists || !toPersonSnap.exists) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+
+      tx.delete(relationshipRef);
+    });
+
+    return {ok: true, relationshipId};
+  } catch (error) {
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("internal", "No se pudo eliminar la relación.");
   }
 });
 
