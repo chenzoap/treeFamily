@@ -141,6 +141,47 @@ describe("sección Relaciones de esta persona", () => {
     expect(markup).toContain("Quitar relación");
   });
 
+  it("muestra Cambiar estado para PARTNER_OF desde ambos endpoints", () => {
+    state.relationships = [{
+      id: "root-partner", type: "PARTNER_OF", fromPersonId: "root",
+      toPersonId: "partner", relationshipStatus: "current",
+    }];
+    const fromMarkup = renderToStaticMarkup(createElement(Stage4Panel));
+    state.selectedPersonId = "partner";
+    const toMarkup = renderToStaticMarkup(createElement(Stage4Panel));
+    [fromMarkup, toMarkup].forEach((markup) => {
+      expect(markup).toContain("Actual");
+      expect(markup).toContain("Cambiar estado");
+      expect(markup).toContain("Quitar relación");
+    });
+  });
+
+  it("no muestra Cambiar estado para PARENT_OF", () => {
+    state.relationships = [{
+      id: "root-child", type: "PARENT_OF", fromPersonId: "root",
+      toPersonId: "child", parentRole: "mother",
+    }];
+    const markup = renderToStaticMarkup(createElement(Stage4Panel));
+    expect(markup).not.toContain("Cambiar estado");
+    expect(markup).toContain("Quitar relación");
+  });
+
+  it.each([
+    ["current", "Actual"],
+    ["former", "Anterior"],
+    ["unknown", "Estado desconocido"],
+    [undefined, "Estado desconocido"],
+  ] as const)("presenta status %s y mantiene identidad", (status, label) => {
+    state.relationships = [{
+      id: "stable-partner", type: "PARTNER_OF", fromPersonId: "root",
+      toPersonId: "partner", relationshipStatus: status,
+    }];
+    const markup = renderToStaticMarkup(createElement(Stage4Panel));
+    expect(markup).toContain(label);
+    expect(markup).toContain("Cambiar estado");
+    expect(state.relationships[0].id).toBe("stable-partner");
+  });
+
   it("root como hijo puede reasignar, root como parent no", () => {
     state.relationships = [{
       id: "parent-root", type: "PARENT_OF", fromPersonId: "partner",
@@ -188,7 +229,28 @@ describe("sección Relaciones de esta persona", () => {
     );
   });
 
+  it("éxito de status preserva selección y espera listeners", () => {
+    const start = stage4PanelSource.indexOf(
+      "partnerRelationshipPendingStatusUpdate &&"
+    );
+    const end = stage4PanelSource.indexOf("{notice &&", start);
+    const implementation = stage4PanelSource.slice(start, end);
+    expect(implementation).toContain(
+      "Estado de la relación actualizado correctamente."
+    );
+    expect(implementation).toContain(
+      "setPartnerRelationshipPendingStatusUpdate(null)"
+    );
+    expect(implementation).not.toMatch(
+      /setSelectedPersonId|setPersons|setRelationships|getTreeData|location\.reload/
+    );
+    expect(implementation).not.toMatch(
+      /deleteDoc|updateDoc|setDoc|writeBatch|runTransaction|addDoc/
+    );
+  });
+
   it("no añade estado global de relación seleccionada", () => {
     expect(stage4PanelSource).not.toContain("selectedRelationshipId");
+    expect(stage4PanelSource).not.toContain("selectedRelationshipStatus");
   });
 });

@@ -8,6 +8,7 @@ import EditPersonForm from "./EditPersonForm";
 import DeletePersonDialog from "./DeletePersonDialog";
 import DeleteRelationshipDialog from "./DeleteRelationshipDialog";
 import ReassignParentDialog from "./ReassignParentDialog";
+import UpdatePartnerStatusDialog from "./UpdatePartnerStatusDialog";
 import {
   countIncidentRelationships,
   submitDeletePerson,
@@ -27,6 +28,12 @@ import {
   type ReassignParentPayload,
   type ReassignParentTarget,
 } from "./ReassignParentDialog.logic";
+import {
+  buildUpdatePartnerStatusTarget,
+  type UpdatePartnerStatusCall,
+  type UpdatePartnerStatusPayload,
+  type UpdatePartnerStatusTarget,
+} from "./UpdatePartnerStatusDialog.logic";
 
 type PersonPayload = {
   firstName: string;
@@ -570,6 +577,9 @@ export default function Stage4Panel() {
   const [parentRelationshipPendingReassignment,
     setParentRelationshipPendingReassignment] =
     useState<ReassignParentTarget | null>(null);
+  const [partnerRelationshipPendingStatusUpdate,
+    setPartnerRelationshipPendingStatusUpdate] =
+    useState<UpdatePartnerStatusTarget | null>(null);
 
   const [partnerData, setPartnerData] = useState<PersonPayload>({ ...emptyPerson });
   const [partnerMode, setPartnerMode] = useState<PartnerMode>("new");
@@ -611,6 +621,13 @@ export default function Stage4Panel() {
       ReassignParentPayload,
       {ok: true; relationshipId: string}
     >(functions, "reassignParentRelationship");
+    return async (payload) => callable(payload);
+  }, []);
+  const updatePartnerStatusFn = useMemo<UpdatePartnerStatusCall>(() => {
+    const callable = httpsCallable<
+      UpdatePartnerStatusPayload,
+      {ok: true; relationshipId: string}
+    >(functions, "updatePartnerRelationshipStatus");
     return async (payload) => callable(payload);
   }, []);
 
@@ -1122,6 +1139,35 @@ export default function Stage4Panel() {
                         </button>
                       );
                     })()}
+                    {(() => {
+                      const sourceRelationship = relationships.find(
+                        (candidate) =>
+                          candidate.id === relationship.relationshipId
+                      );
+                      if (
+                        !sourceRelationship ||
+                        sourceRelationship.type !== "PARTNER_OF" ||
+                        !activePerson
+                      ) return null;
+                      const target = buildUpdatePartnerStatusTarget({
+                        relationship: sourceRelationship,
+                        activePerson,
+                        persons,
+                      });
+                      if (!target) return null;
+                      return (
+                        <button
+                          type="button"
+                          className="rounded-lg border border-sky-400 bg-white px-3 py-2 text-xs font-bold text-sky-800 transition hover:bg-sky-50"
+                          onClick={() => {
+                            setNotice(null);
+                            setPartnerRelationshipPendingStatusUpdate(target);
+                          }}
+                        >
+                          Cambiar estado
+                        </button>
+                      );
+                    })()}
                     <button
                       type="button"
                       className="rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-50"
@@ -1172,6 +1218,22 @@ export default function Stage4Panel() {
             setNotice({
               kind: "success",
               message: "Progenitor actualizado correctamente.",
+            });
+          }}
+        />
+      )}
+
+      {partnerRelationshipPendingStatusUpdate && (
+        <UpdatePartnerStatusDialog
+          treeId={treeId}
+          target={partnerRelationshipPendingStatusUpdate}
+          call={updatePartnerStatusFn}
+          onCancel={() => setPartnerRelationshipPendingStatusUpdate(null)}
+          onSuccess={() => {
+            setPartnerRelationshipPendingStatusUpdate(null);
+            setNotice({
+              kind: "success",
+              message: "Estado de la relación actualizado correctamente.",
             });
           }}
         />
