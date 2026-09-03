@@ -106,6 +106,7 @@ import {
   deletePerson,
   deleteRelationship,
   reassignParentRelationship,
+  updatePartnerRelationshipStatus,
   updatePerson,
 } from "./index.js";
 import {
@@ -1517,13 +1518,492 @@ describe("reassignParentRelationship", () => {
       readFile(`${process.cwd()}/src/index.ts`, "utf8")
     );
     const start = source.indexOf("export const reassignParentRelationship");
-    const end = source.indexOf("/**\n * LEGACY / TEMPORAL", start);
+    const end = source.indexOf(
+      "/**\n * Actualiza únicamente el estado de una relación de pareja",
+      start
+    );
     const implementation = source.slice(start, end);
     expect(implementation).not.toMatch(
       /getAuth|deleteUser|updateUser|auth\(\)|WriteBatch|BulkWriter|collectionGroup|tx\.update/
     );
     expect(implementation).not.toMatch(
       /type:\s*["']PARTNER_OF|personsRef\.doc\([^)]*\)\.delete|treeRef\.update/
+    );
+  });
+});
+
+type PartnerStatusRelationshipData = {
+  type?: unknown;
+  fromPersonId?: unknown;
+  toPersonId?: unknown;
+  relationshipStatus?: unknown;
+  createdAt?: unknown;
+};
+
+const partnerStatusDocument = (
+  id: string,
+  fromPersonId = "person-a",
+  toPersonId = "person-b",
+  relationshipStatus: unknown = "current"
+) => ({
+  id,
+  ref: {id, kind: "relationship"},
+  data: () => ({
+    type: "PARTNER_OF",
+    fromPersonId,
+    toPersonId,
+    ...(relationshipStatus === undefined ? {} : {relationshipStatus}),
+  }),
+});
+
+const validPartnerStatusRequest = (
+  overrides: Record<string, unknown> = {}
+) => ({
+  auth: {uid: "owner"},
+  data: {
+    treeId: "tree",
+    relationshipId: "partner-link",
+    relationshipStatus: "former",
+    expectedRelationshipStatus: "current",
+    ...overrides,
+  },
+});
+
+describe("updatePartnerRelationshipStatus", () => {
+  let treeExists: boolean;
+  let treeData: Record<string, unknown>;
+  let targetExists: boolean;
+  let targetData: PartnerStatusRelationshipData;
+  let existingPersonIds: Set<string>;
+  let partnerDocuments: ReturnType<typeof partnerStatusDocument>[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    treeExists = true;
+    treeData = {
+      ownerId: "owner",
+      rootPersonId: "root",
+      updatedAt: "tree-unchanged",
+    };
+    targetExists = true;
+    targetData = {
+      type: "PARTNER_OF",
+      fromPersonId: "person-a",
+      toPersonId: "person-b",
+      relationshipStatus: "current",
+      createdAt: "created-at",
+    };
+    existingPersonIds = new Set(["root", "person-a", "person-b"]);
+    partnerDocuments = [partnerStatusDocument("partner-link")];
+
+    addRelationshipFirestore.transactionGet.mockImplementation(
+      async (reference) => {
+        if (reference === addRelationshipFirestore.treeRef) {
+          return {exists: treeExists, data: () => treeData};
+        }
+        if (reference?.kind === "relationship") {
+          return {exists: targetExists, data: () => targetData};
+        }
+        if (reference?.kind === "person") {
+          return {
+            exists: existingPersonIds.has(reference.id),
+            data: () => ({ownerId: "ignored-person-owner"}),
+          };
+        }
+        if (reference === addRelationshipFirestore.duplicateQuery) {
+          return {docs: partnerDocuments, size: partnerDocuments.length};
+        }
+        throw new Error("Referencia de lectura inesperada");
+      }
+    );
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => callback({
+        get: addRelationshipFirestore.transactionGet,
+        update: addRelationshipFirestore.transactionUpdate,
+        set: addRelationshipFirestore.transactionSet,
+        delete: addRelationshipFirestore.transactionDelete,
+      })
+    );
+  });
+
+  const expectPartnerStatusError = async (
+    request: ReturnType<typeof validPartnerStatusRequest>,
+    code: string,
+    reason?: string
+  ) => {
+    const error = await updatePartnerRelationshipStatus.run(request as never)
+      .catch((value) => value);
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe(code);
+    if (reason) expect(error.details).toEqual({reason});
+    return error;
+  };
+
+  it("exige Auth antes de Firestore", async () => {
+    await expectPartnerStatusError(
+      {...validPartnerStatusRequest(), auth: undefined} as never,
+      "unauthenticated"
+    );
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["treeId", undefined, "invalid-tree-id"],
+    ["treeId", 42, "invalid-tree-id"],
+    ["treeId", "", "invalid-tree-id"],
+    ["treeId", "   ", "invalid-tree-id"],
+    ["treeId", "tree/other", "invalid-tree-id"],
+    ["relationshipId", undefined, "invalid-relationship-id"],
+    ["relationshipId", 42, "invalid-relationship-id"],
+    ["relationshipId", "", "invalid-relationship-id"],
+    ["relationshipId", "   ", "invalid-relationship-id"],
+    ["relationshipId", "rel/other", "invalid-relationship-id"],
+  ])("rechaza %s inválido: %s", async (field, value, reason) => {
+    await expectPartnerStatusError(
+      validPartnerStatusRequest({[field]: value}),
+      "invalid-argument",
+      reason
+    );
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["relationshipStatus", undefined, "invalid-relationship-status"],
+    ["relationshipStatus", 42, "invalid-relationship-status"],
+    ["relationshipStatus", "", "invalid-relationship-status"],
+    ["relationshipStatus", "   ", "invalid-relationship-status"],
+    ["relationshipStatus", " current ", "invalid-relationship-status"],
+    ["relationshipStatus", "married", "invalid-relationship-status"],
+    ["expectedRelationshipStatus", undefined, "invalid-expected-relationship-status"],
+    ["expectedRelationshipStatus", 42, "invalid-expected-relationship-status"],
+    ["expectedRelationshipStatus", "", "invalid-expected-relationship-status"],
+    ["expectedRelationshipStatus", "   ", "invalid-expected-relationship-status"],
+    ["expectedRelationshipStatus", " current ", "invalid-expected-relationship-status"],
+    ["expectedRelationshipStatus", "married", "invalid-expected-relationship-status"],
+  ])("rechaza %s inválido: %s", async (field, value, reason) => {
+    await expectPartnerStatusError(
+      validPartnerStatusRequest({[field]: value}),
+      "invalid-argument",
+      reason
+    );
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+  });
+
+  it("normaliza IDs y solo usa tree.ownerId", async () => {
+    const result = await updatePartnerRelationshipStatus.run(
+      validPartnerStatusRequest({
+        treeId: " tree ",
+        relationshipId: " partner-link ",
+        ownerId: "attacker",
+      }) as never
+    );
+    expect(result).toEqual({ok: true, relationshipId: "partner-link"});
+    expect(addRelationshipFirestore.transactionUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("rechaza árbol inexistente", async () => {
+    treeExists = false;
+    await expectPartnerStatusError(
+      validPartnerStatusRequest(), "not-found", "tree-not-found"
+    );
+  });
+
+  it("autoriza exclusivamente por ownerId del árbol", async () => {
+    treeData.ownerId = "other-owner";
+    await expectPartnerStatusError(
+      validPartnerStatusRequest(), "permission-denied", "not-tree-owner"
+    );
+  });
+
+  it("rechaza relación inexistente", async () => {
+    targetExists = false;
+    await expectPartnerStatusError(
+      validPartnerStatusRequest(), "not-found", "relationship-not-found"
+    );
+  });
+
+  it.each(["PARENT_OF", "RELATED_TO"])(
+    "rechaza target de tipo %s",
+    async (type) => {
+      targetData.type = type;
+      await expectPartnerStatusError(
+        validPartnerStatusRequest(),
+        "failed-precondition",
+        "relationship-not-partner"
+      );
+    }
+  );
+
+  it.each([
+    ["from ausente", {type: "PARTNER_OF", toPersonId: "person-b"}],
+    ["from no string", {type: "PARTNER_OF", fromPersonId: 4, toPersonId: "person-b"}],
+    ["from vacío", {type: "PARTNER_OF", fromPersonId: "  ", toPersonId: "person-b"}],
+    ["from con slash", {type: "PARTNER_OF", fromPersonId: "person/a", toPersonId: "person-b"}],
+    ["to ausente", {type: "PARTNER_OF", fromPersonId: "person-a"}],
+    ["to no string", {type: "PARTNER_OF", fromPersonId: "person-a", toPersonId: 4}],
+    ["to vacío", {type: "PARTNER_OF", fromPersonId: "person-a", toPersonId: "  "}],
+    ["to con slash", {type: "PARTNER_OF", fromPersonId: "person-a", toPersonId: "person/b"}],
+    ["self", {type: "PARTNER_OF", fromPersonId: "person-a", toPersonId: "person-a"}],
+    ["status string corrupto", {type: "PARTNER_OF", fromPersonId: "person-a", toPersonId: "person-b", relationshipStatus: "married"}],
+    ["status no string", {type: "PARTNER_OF", fromPersonId: "person-a", toPersonId: "person-b", relationshipStatus: 4}],
+  ])("bloquea target corrupto: %s", async (_name, data) => {
+    targetData = data;
+    await expectPartnerStatusError(
+      validPartnerStatusRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+  });
+
+  it.each(["person-a", "person-b"])(
+    "bloquea endpoint inexistente: %s",
+    async (personId) => {
+      existingPersonIds.delete(personId);
+      await expectPartnerStatusError(
+        validPartnerStatusRequest(),
+        "failed-precondition",
+        "inconsistent-tree-data"
+      );
+    }
+  );
+
+  it.each([
+    ["current", "former"],
+    ["current", "unknown"],
+    ["former", "current"],
+    ["former", "unknown"],
+    ["unknown", "current"],
+    ["unknown", "former"],
+  ] as const)("permite transición %s → %s", async (stored, desired) => {
+    targetData.relationshipStatus = stored;
+    const result = await updatePartnerRelationshipStatus.run(
+      validPartnerStatusRequest({
+        relationshipStatus: desired,
+        expectedRelationshipStatus: stored,
+      }) as never
+    );
+    expect(result).toEqual({ok: true, relationshipId: "partner-link"});
+    expect(addRelationshipFirestore.transactionUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({id: "partner-link"}),
+      {relationshipStatus: desired, updatedAt: "server-timestamp"}
+    );
+  });
+
+  it.each(["current", "former", "unknown"] as const)(
+    "explicit same-status %s es success no-op",
+    async (status) => {
+      targetData.relationshipStatus = status;
+      const result = await updatePartnerRelationshipStatus.run(
+        validPartnerStatusRequest({
+          relationshipStatus: status,
+          expectedRelationshipStatus: status,
+        }) as never
+      );
+      expect(result).toEqual({ok: true, relationshipId: "partner-link"});
+      expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+      expect(addRelationshipFirestore.serverTimestamp).not.toHaveBeenCalled();
+    }
+  );
+
+  it("desired ya alcanzado converge aun con expected antiguo", async () => {
+    targetData.relationshipStatus = "former";
+    await updatePartnerRelationshipStatus.run(validPartnerStatusRequest({
+      relationshipStatus: "former",
+      expectedRelationshipStatus: "current",
+    }) as never);
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+  });
+
+  it.each(["current", "former", "unknown"] as const)(
+    "materializa histórico ausente como %s",
+    async (desired) => {
+      delete targetData.relationshipStatus;
+      await updatePartnerRelationshipStatus.run(validPartnerStatusRequest({
+        relationshipStatus: desired,
+        expectedRelationshipStatus: "unknown",
+      }) as never);
+      expect(addRelationshipFirestore.transactionUpdate).toHaveBeenCalledWith(
+        expect.anything(),
+        {relationshipStatus: desired, updatedAt: "server-timestamp"}
+      );
+    }
+  );
+
+  it.each(["current", "former"] as const)(
+    "histórico ausente rechaza expected stale %s",
+    async (expectedRelationshipStatus) => {
+      delete targetData.relationshipStatus;
+      await expectPartnerStatusError(
+        validPartnerStatusRequest({
+          relationshipStatus: "former",
+          expectedRelationshipStatus,
+        }),
+        "failed-precondition",
+        "relationship-status-changed"
+      );
+    }
+  );
+
+  it.each([
+    ["former", "unknown", "current"],
+    ["unknown", "former", "current"],
+  ] as const)(
+    "bloquea stale conflict stored=%s desired=%s expected=%s",
+    async (stored, desired, expected) => {
+      targetData.relationshipStatus = stored;
+      await expectPartnerStatusError(
+        validPartnerStatusRequest({
+          relationshipStatus: desired,
+          expectedRelationshipStatus: expected,
+        }),
+        "failed-precondition",
+        "relationship-status-changed"
+      );
+      expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    }
+  );
+
+  it.each([
+    ["directo mismo status", partnerStatusDocument("duplicate")],
+    ["directo distinto status", partnerStatusDocument("duplicate", "person-a", "person-b", "former")],
+    ["inverso mismo status", partnerStatusDocument("duplicate", "person-b", "person-a")],
+    ["inverso distinto status", partnerStatusDocument("duplicate", "person-b", "person-a", "former")],
+  ])("bloquea duplicado %s", async (_name, duplicate) => {
+    partnerDocuments.push(duplicate);
+    await expectPartnerStatusError(
+      validPartnerStatusRequest(),
+      "failed-precondition",
+      "duplicate-partner-link"
+    );
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+  });
+
+  it("detecta múltiples duplicados y excluye el target propio", async () => {
+    partnerDocuments.push(
+      partnerStatusDocument("duplicate-a"),
+      partnerStatusDocument("duplicate-b", "person-b", "person-a")
+    );
+    await expectPartnerStatusError(
+      validPartnerStatusRequest(),
+      "failed-precondition",
+      "duplicate-partner-link"
+    );
+    partnerDocuments = [partnerStatusDocument("partner-link")];
+    vi.clearAllMocks();
+  });
+
+  it.each([
+    ["root from", "root", "person-b"],
+    ["root to", "person-a", "root"],
+  ])("permite %s", async (_name, fromPersonId, toPersonId) => {
+    targetData.fromPersonId = fromPersonId;
+    targetData.toPersonId = toPersonId;
+    partnerDocuments = [partnerStatusDocument(
+      "partner-link", fromPersonId, toPersonId
+    )];
+    await updatePartnerRelationshipStatus.run(
+      validPartnerStatusRequest() as never
+    );
+    expect(addRelationshipFirestore.transactionUpdate).toHaveBeenCalledOnce();
+  });
+
+  it("preserva parejas con o sin hijos y no consulta PARENT_OF", async () => {
+    await updatePartnerRelationshipStatus.run(
+      validPartnerStatusRequest() as never
+    );
+    expect(addRelationshipFirestore.duplicateQuery.where)
+      .not.toHaveBeenCalledWith("type", "==", "PARENT_OF");
+    const source = await import("node:fs/promises").then(({readFile}) =>
+      readFile(`${process.cwd()}/src/index.ts`, "utf8")
+    );
+    const start = source.indexOf("export const updatePartnerRelationshipStatus");
+    const end = source.indexOf("/**\n * LEGACY / TEMPORAL", start);
+    expect(source.slice(start, end)).not.toContain(
+      ".where(\"type\", \"==\", \"PARENT_OF\")"
+    );
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+  });
+
+  it("realiza todas las lecturas antes del único update exacto", async () => {
+    await updatePartnerRelationshipStatus.run(
+      validPartnerStatusRequest() as never
+    );
+    const lastRead = Math.max(
+      ...addRelationshipFirestore.transactionGet.mock.invocationCallOrder
+    );
+    const updateOrder = addRelationshipFirestore.transactionUpdate
+      .mock.invocationCallOrder[0];
+    expect(lastRead).toBeLessThan(updateOrder);
+    expect(addRelationshipFirestore.transactionUpdate).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({id: "partner-link", kind: "relationship"}),
+      {relationshipStatus: "former", updatedAt: "server-timestamp"}
+    );
+    expect(addRelationshipFirestore.runTransaction).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("errores previos al update producen cero escrituras", async () => {
+    existingPersonIds.delete("person-b");
+    await expectPartnerStatusError(
+      validPartnerStatusRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.serverTimestamp).not.toHaveBeenCalled();
+  });
+
+  it("respuesta es mínima y conserva relationshipId", async () => {
+    const result = await updatePartnerRelationshipStatus.run(
+      validPartnerStatusRequest() as never
+    );
+    expect(result).toEqual({ok: true, relationshipId: "partner-link"});
+    expect(Object.keys(result).sort()).toEqual(["ok", "relationshipId"]);
+  });
+
+  it("sanitiza errores inesperados y conserva HttpsError deliberados", async () => {
+    addRelationshipFirestore.transactionGet.mockRejectedValueOnce(
+      new Error("sensitive-sdk-message")
+    );
+    const internal = await expectPartnerStatusError(
+      validPartnerStatusRequest(), "internal"
+    );
+    expect(internal.message).not.toContain("sensitive-sdk-message");
+
+    vi.clearAllMocks();
+    treeExists = false;
+    addRelationshipFirestore.transactionGet.mockImplementation(
+      async (reference) => reference === addRelationshipFirestore.treeRef ?
+        {exists: false} : Promise.reject(new Error("unexpected"))
+    );
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => callback({
+        get: addRelationshipFirestore.transactionGet,
+        update: addRelationshipFirestore.transactionUpdate,
+      })
+    );
+    await expectPartnerStatusError(
+      validPartnerStatusRequest(), "not-found", "tree-not-found"
+    );
+  });
+
+  it("no usa APIs ni escrituras prohibidas", async () => {
+    const source = await import("node:fs/promises").then(({readFile}) =>
+      readFile(`${process.cwd()}/src/index.ts`, "utf8")
+    );
+    const start = source.indexOf("export const updatePartnerRelationshipStatus");
+    const end = source.indexOf("/**\n * LEGACY / TEMPORAL", start);
+    const implementation = source.slice(start, end);
+    expect(implementation).not.toMatch(
+      /getAuth|deleteUser|updateUser|auth\(\)|WriteBatch|BulkWriter|collectionGroup|tx\.set|tx\.delete/
+    );
+    expect(implementation.match(/tx\.update\(/g)).toHaveLength(1);
+    expect(implementation).not.toMatch(
+      /type:\s*["']PARENT_OF|person[^\n]*\.update|treeRef\.update/
     );
   });
 });

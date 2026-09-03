@@ -361,6 +361,41 @@ function assertReassignParentId(
   return normalized;
 }
 
+function assertPartnerStatusId(
+  value: unknown,
+  fieldName: "treeId" | "relationshipId"
+): string {
+  const reason = fieldName === "treeId" ?
+    "invalid-tree-id" : "invalid-relationship-id";
+  if (typeof value !== "string") {
+    throw new HttpsError("invalid-argument", `${fieldName} no es válido.`, {
+      reason,
+    });
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.includes("/")) {
+    throw new HttpsError("invalid-argument", `${fieldName} no es válido.`, {
+      reason,
+    });
+  }
+  return normalized;
+}
+
+function assertPartnerStatus(
+  value: unknown,
+  reason: "invalid-relationship-status" |
+    "invalid-expected-relationship-status"
+): PartnerRelationshipStatus {
+  if (value !== "current" && value !== "former" && value !== "unknown") {
+    throw new HttpsError(
+      "invalid-argument",
+      "El estado de la relación de pareja no es válido.",
+      {reason}
+    );
+  }
+  return value;
+}
+
 function normalizePersonPayload(personData: PersonPayload, uid: string, timestamp: FirebaseFirestore.FieldValue) {
   return {
     firstName: assertRequiredString(personData.firstName, "La persona necesita nombre."),
@@ -1115,6 +1150,153 @@ export const reassignParentRelationship = onCall(async (request) => {
   } catch (error) {
     if (error instanceof HttpsError) throw error;
     throw new HttpsError("internal", "No se pudo reasignar el progenitor.");
+  }
+});
+
+/**
+ * Actualiza únicamente el estado de una relación de pareja existente.
+ */
+export const updatePartnerRelationshipStatus = onCall(async (request) => {
+  const uid = assertAuth(request);
+  const data = request.data as {
+    treeId?: unknown;
+    relationshipId?: unknown;
+    relationshipStatus?: unknown;
+    expectedRelationshipStatus?: unknown;
+  };
+  const treeId = assertPartnerStatusId(data?.treeId, "treeId");
+  const relationshipId = assertPartnerStatusId(
+    data?.relationshipId,
+    "relationshipId"
+  );
+  const relationshipStatus = assertPartnerStatus(
+    data?.relationshipStatus,
+    "invalid-relationship-status"
+  );
+  const expectedRelationshipStatus = assertPartnerStatus(
+    data?.expectedRelationshipStatus,
+    "invalid-expected-relationship-status"
+  );
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const treeRef = db.collection("trees").doc(treeId);
+      const personsRef = treeRef.collection("persons");
+      const relationshipsRef = treeRef.collection("relationships");
+      const relationshipRef = relationshipsRef.doc(relationshipId);
+
+      const treeSnap = await tx.get(treeRef);
+      if (!treeSnap.exists) {
+        throw new HttpsError("not-found", "El árbol no existe.", {
+          reason: "tree-not-found",
+        });
+      }
+      if (treeSnap.data()?.ownerId !== uid) {
+        throw new HttpsError(
+          "permission-denied",
+          "No tienes permiso sobre este árbol.",
+          {reason: "not-tree-owner"}
+        );
+      }
+
+      const relationshipSnap = await tx.get(relationshipRef);
+      if (!relationshipSnap.exists) {
+        throw new HttpsError("not-found", "La relación no existe.", {
+          reason: "relationship-not-found",
+        });
+      }
+
+      const relationship = relationshipSnap.data();
+      if (relationship?.type !== "PARTNER_OF") {
+        throw new HttpsError(
+          "failed-precondition",
+          "La relación no es una relación de pareja.",
+          {reason: "relationship-not-partner"}
+        );
+      }
+      const fromPersonId = relationship.fromPersonId;
+      const toPersonId = relationship.toPersonId;
+      const storedStatus = relationship.relationshipStatus;
+      if (
+        typeof fromPersonId !== "string" || !fromPersonId.trim() ||
+        fromPersonId.includes("/") ||
+        typeof toPersonId !== "string" || !toPersonId.trim() ||
+        toPersonId.includes("/") ||
+        fromPersonId === toPersonId ||
+        (storedStatus !== undefined &&
+          storedStatus !== "current" &&
+          storedStatus !== "former" &&
+          storedStatus !== "unknown")
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+
+      const fromPersonSnap = await tx.get(personsRef.doc(fromPersonId));
+      const toPersonSnap = await tx.get(personsRef.doc(toPersonId));
+      if (!fromPersonSnap.exists || !toPersonSnap.exists) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+
+      const forwardQuery = relationshipsRef
+        .where("type", "==", "PARTNER_OF")
+        .where("fromPersonId", "==", fromPersonId)
+        .where("toPersonId", "==", toPersonId);
+      const reverseQuery = relationshipsRef
+        .where("type", "==", "PARTNER_OF")
+        .where("fromPersonId", "==", toPersonId)
+        .where("toPersonId", "==", fromPersonId);
+      const forwardSnap = await tx.get(forwardQuery);
+      const reverseSnap = await tx.get(reverseQuery);
+      const hasDuplicate = [...forwardSnap.docs, ...reverseSnap.docs]
+        .some((document) => document.id !== relationshipId);
+      if (hasDuplicate) {
+        throw new HttpsError(
+          "failed-precondition",
+          "La relación de pareja está duplicada.",
+          {reason: "duplicate-partner-link"}
+        );
+      }
+
+      const hasExplicitRelationshipStatus = storedStatus !== undefined;
+      const storedRelationshipStatusNormalized =
+        storedStatus ?? "unknown";
+      if (
+        hasExplicitRelationshipStatus &&
+        storedRelationshipStatusNormalized === relationshipStatus
+      ) {
+        return;
+      }
+      if (
+        storedRelationshipStatusNormalized !== expectedRelationshipStatus
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El estado de la relación cambió.",
+          {reason: "relationship-status-changed"}
+        );
+      }
+
+      tx.update(relationshipRef, {
+        relationshipStatus,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    return {ok: true, relationshipId};
+  } catch (error) {
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError(
+      "internal",
+      "No se pudo actualizar el estado de la relación de pareja."
+    );
   }
 });
 
