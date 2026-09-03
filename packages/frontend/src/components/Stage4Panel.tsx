@@ -7,6 +7,7 @@ import type { Union } from "../types/family";
 import EditPersonForm from "./EditPersonForm";
 import DeletePersonDialog from "./DeletePersonDialog";
 import DeleteRelationshipDialog from "./DeleteRelationshipDialog";
+import ReassignParentDialog from "./ReassignParentDialog";
 import {
   countIncidentRelationships,
   submitDeletePerson,
@@ -20,6 +21,12 @@ import {
   type DeleteRelationshipPayload,
   type RelationshipPresentation,
 } from "./DeleteRelationshipDialog.logic";
+import {
+  buildReassignParentTarget,
+  type ReassignParentCall,
+  type ReassignParentPayload,
+  type ReassignParentTarget,
+} from "./ReassignParentDialog.logic";
 
 type PersonPayload = {
   firstName: string;
@@ -560,6 +567,9 @@ export default function Stage4Panel() {
     useState<string | null>(null);
   const [relationshipPendingDeletion, setRelationshipPendingDeletion] =
     useState<RelationshipPresentation | null>(null);
+  const [parentRelationshipPendingReassignment,
+    setParentRelationshipPendingReassignment] =
+    useState<ReassignParentTarget | null>(null);
 
   const [partnerData, setPartnerData] = useState<PersonPayload>({ ...emptyPerson });
   const [partnerMode, setPartnerMode] = useState<PartnerMode>("new");
@@ -594,6 +604,13 @@ export default function Stage4Panel() {
       DeleteRelationshipPayload,
       {ok: true; relationshipId: string}
     >(functions, "deleteRelationship");
+    return async (payload) => callable(payload);
+  }, []);
+  const reassignParentFn = useMemo<ReassignParentCall>(() => {
+    const callable = httpsCallable<
+      ReassignParentPayload,
+      {ok: true; relationshipId: string}
+    >(functions, "reassignParentRelationship");
     return async (payload) => callable(payload);
   }, []);
 
@@ -1075,16 +1092,47 @@ export default function Stage4Panel() {
                       <p className="mt-1 text-xs text-slate-500">{relationship.statusLabel}</p>
                     )}
                   </div>
-                  <button
-                    type="button"
-                    className="shrink-0 rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-50"
-                    onClick={() => {
-                      setNotice(null);
-                      setRelationshipPendingDeletion(relationship);
-                    }}
-                  >
-                    Quitar relación
-                  </button>
+                  <div className="flex shrink-0 flex-col gap-2">
+                    {(() => {
+                      const sourceRelationship = relationships.find(
+                        (candidate) =>
+                          candidate.id === relationship.relationshipId
+                      );
+                      if (
+                        !sourceRelationship ||
+                        sourceRelationship.type !== "PARENT_OF" ||
+                        sourceRelationship.toPersonId !== activePerson?.id
+                      ) return null;
+                      return (
+                        <button
+                          type="button"
+                          className="rounded-lg border border-amber-400 bg-white px-3 py-2 text-xs font-bold text-amber-800 transition hover:bg-amber-50"
+                          onClick={() => {
+                            setNotice(null);
+                            setParentRelationshipPendingReassignment(
+                              buildReassignParentTarget({
+                                relationship: sourceRelationship,
+                                persons,
+                                relationships,
+                              })
+                            );
+                          }}
+                        >
+                          Cambiar progenitor
+                        </button>
+                      );
+                    })()}
+                    <button
+                      type="button"
+                      className="rounded-lg border border-red-300 bg-white px-3 py-2 text-xs font-bold text-red-700 transition hover:bg-red-50"
+                      onClick={() => {
+                        setNotice(null);
+                        setRelationshipPendingDeletion(relationship);
+                      }}
+                    >
+                      Quitar relación
+                    </button>
+                  </div>
                 </div>
               </li>
             ))}
@@ -1110,6 +1158,22 @@ export default function Stage4Panel() {
           relationship={relationshipPendingDeletion}
           onCancel={() => setRelationshipPendingDeletion(null)}
           onConfirm={confirmDeleteRelationship}
+        />
+      )}
+
+      {parentRelationshipPendingReassignment && (
+        <ReassignParentDialog
+          treeId={treeId}
+          target={parentRelationshipPendingReassignment}
+          call={reassignParentFn}
+          onCancel={() => setParentRelationshipPendingReassignment(null)}
+          onSuccess={() => {
+            setParentRelationshipPendingReassignment(null);
+            setNotice({
+              kind: "success",
+              message: "Progenitor actualizado correctamente.",
+            });
+          }}
         />
       )}
 

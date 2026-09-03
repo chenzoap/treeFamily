@@ -116,6 +116,46 @@ describe("sección Relaciones de esta persona", () => {
     ].forEach((label) => expect(markup).toContain(label));
   });
 
+  it("muestra Cambiar progenitor solo desde la perspectiva del hijo", () => {
+    state.relationships = [{
+      id: "root-child", type: "PARENT_OF", fromPersonId: "root",
+      toPersonId: "child", parentRole: "mother",
+    }];
+    state.selectedPersonId = "child";
+    const childMarkup = renderToStaticMarkup(createElement(Stage4Panel));
+    state.selectedPersonId = "root";
+    const parentMarkup = renderToStaticMarkup(createElement(Stage4Panel));
+    expect(childMarkup).toContain("Cambiar progenitor");
+    expect(childMarkup).toContain("Quitar relación");
+    expect(parentMarkup).not.toContain("Cambiar progenitor");
+    expect(parentMarkup).toContain("Quitar relación");
+  });
+
+  it("no muestra Cambiar progenitor para PARTNER_OF", () => {
+    state.relationships = [{
+      id: "root-partner", type: "PARTNER_OF", fromPersonId: "root",
+      toPersonId: "partner",
+    }];
+    const markup = renderToStaticMarkup(createElement(Stage4Panel));
+    expect(markup).not.toContain("Cambiar progenitor");
+    expect(markup).toContain("Quitar relación");
+  });
+
+  it("root como hijo puede reasignar, root como parent no", () => {
+    state.relationships = [{
+      id: "parent-root", type: "PARENT_OF", fromPersonId: "partner",
+      toPersonId: "root", parentRole: "father",
+    }];
+    const rootChildMarkup = renderToStaticMarkup(createElement(Stage4Panel));
+    state.relationships = [{
+      id: "root-child", type: "PARENT_OF", fromPersonId: "root",
+      toPersonId: "child", parentRole: "mother",
+    }];
+    const rootParentMarkup = renderToStaticMarkup(createElement(Stage4Panel));
+    expect(rootChildMarkup).toContain("Cambiar progenitor");
+    expect(rootParentMarkup).not.toContain("Cambiar progenitor");
+  });
+
   it("éxito solo cierra diálogo y muestra notice sin mutar store", () => {
     const start = stage4PanelSource.indexOf("const confirmDeleteRelationship");
     const end = stage4PanelSource.indexOf("\n\n  return (", start);
@@ -128,5 +168,27 @@ describe("sección Relaciones de esta persona", () => {
     expect(implementation).not.toMatch(
       /deleteDoc|updateDoc|setDoc|writeBatch|runTransaction/
     );
+  });
+
+  it("éxito de reasignación preserva selección y espera listeners", () => {
+    const start = stage4PanelSource.indexOf(
+      "parentRelationshipPendingReassignment &&"
+    );
+    const end = stage4PanelSource.indexOf("{notice &&", start);
+    const implementation = stage4PanelSource.slice(start, end);
+    expect(implementation).toContain("Progenitor actualizado correctamente.");
+    expect(implementation).toContain(
+      "setParentRelationshipPendingReassignment(null)"
+    );
+    expect(implementation).not.toMatch(
+      /setSelectedPersonId|setPersons|setRelationships|getTreeData|location\.reload/
+    );
+    expect(implementation).not.toMatch(
+      /deleteDoc|updateDoc|setDoc|writeBatch|runTransaction|addDoc/
+    );
+  });
+
+  it("no añade estado global de relación seleccionada", () => {
+    expect(stage4PanelSource).not.toContain("selectedRelationshipId");
   });
 });
