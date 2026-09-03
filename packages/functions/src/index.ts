@@ -3,6 +3,7 @@ import * as admin from "firebase-admin";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
 import {
   normalizeParentRole,
+  hasDirectedParentPath,
   validateNewParentLink,
   validateNewChildForExistingUnion,
   type ExistingParentLink,
@@ -334,6 +335,29 @@ function assertDeleteRelationshipId(
     );
   }
 
+  return normalized;
+}
+
+function assertReassignParentId(
+  value: unknown,
+  fieldName: "treeId" | "relationshipId" | "newParentPersonId"
+): string {
+  const reasonByField = {
+    treeId: "invalid-tree-id",
+    relationshipId: "invalid-relationship-id",
+    newParentPersonId: "invalid-new-parent-id",
+  } as const;
+  if (typeof value !== "string") {
+    throw new HttpsError("invalid-argument", `${fieldName} no es válido.`, {
+      reason: reasonByField[fieldName],
+    });
+  }
+  const normalized = value.trim();
+  if (!normalized || normalized.includes("/")) {
+    throw new HttpsError("invalid-argument", `${fieldName} no es válido.`, {
+      reason: reasonByField[fieldName],
+    });
+  }
   return normalized;
 }
 
@@ -808,6 +832,289 @@ export const deleteRelationship = onCall(async (request) => {
   } catch (error) {
     if (error instanceof HttpsError) throw error;
     throw new HttpsError("internal", "No se pudo eliminar la relación.");
+  }
+});
+
+/**
+ * Sustituye atómicamente una filiación por otra con un nuevo documento.
+ */
+export const reassignParentRelationship = onCall(async (request) => {
+  const uid = assertAuth(request);
+  const data = request.data as {
+    treeId?: unknown;
+    relationshipId?: unknown;
+    newParentPersonId?: unknown;
+    parentRole?: unknown;
+  };
+  const treeId = assertReassignParentId(data?.treeId, "treeId");
+  const relationshipId = assertReassignParentId(
+    data?.relationshipId,
+    "relationshipId"
+  );
+  const newParentPersonId = assertReassignParentId(
+    data?.newParentPersonId,
+    "newParentPersonId"
+  );
+
+  const treeRef = db.collection("trees").doc(treeId);
+  const personsRef = treeRef.collection("persons");
+  const relationshipsRef = treeRef.collection("relationships");
+  const oldRelationshipRef = relationshipsRef.doc(relationshipId);
+  const newRelationshipRef = relationshipsRef.doc();
+
+  try {
+    await db.runTransaction(async (tx) => {
+      const treeSnap = await tx.get(treeRef);
+      if (!treeSnap.exists) {
+        throw new HttpsError("not-found", "El árbol no existe.", {
+          reason: "tree-not-found",
+        });
+      }
+      if (treeSnap.data()?.ownerId !== uid) {
+        throw new HttpsError(
+          "permission-denied",
+          "No tienes permiso sobre este árbol.",
+          {reason: "not-tree-owner"}
+        );
+      }
+
+      const relationshipSnap = await tx.get(oldRelationshipRef);
+      if (!relationshipSnap.exists) {
+        throw new HttpsError("not-found", "La relación no existe.", {
+          reason: "relationship-not-found",
+        });
+      }
+
+      const relationship = relationshipSnap.data();
+      if (relationship?.type !== "PARENT_OF") {
+        throw new HttpsError(
+          "failed-precondition",
+          "La relación no es una filiación parental.",
+          {reason: "relationship-not-parent"}
+        );
+      }
+      const oldParentPersonId = relationship.fromPersonId;
+      const childPersonId = relationship.toPersonId;
+      if (
+        typeof oldParentPersonId !== "string" ||
+        !oldParentPersonId.trim() ||
+        typeof childPersonId !== "string" ||
+        !childPersonId.trim() ||
+        oldParentPersonId === childPersonId
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+
+      const storedParentRole = relationship.parentRole;
+      let resolvedParentRole: ParentRole;
+      if (storedParentRole === "father" || storedParentRole === "mother") {
+        if (data.parentRole !== undefined) {
+          throw new HttpsError(
+            "invalid-argument",
+            "parentRole no debe enviarse para esta relación.",
+            {reason: "unexpected-parent-role"}
+          );
+        }
+        resolvedParentRole = storedParentRole;
+      } else if (storedParentRole !== undefined) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      } else {
+        const requestedParentRole = normalizeParentRole(data.parentRole);
+        if (!requestedParentRole) {
+          throw new HttpsError(
+            "invalid-argument",
+            "parentRole debe ser 'father' o 'mother'.",
+            {reason: "invalid-parent-role"}
+          );
+        }
+        resolvedParentRole = requestedParentRole;
+      }
+
+      if (newParentPersonId === oldParentPersonId) {
+        throw new HttpsError("failed-precondition", "El progenitor no cambió.", {
+          reason: "same-parent",
+        });
+      }
+      if (newParentPersonId === childPersonId) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Una persona no puede ser progenitora de sí misma.",
+          {reason: "self-parent"}
+        );
+      }
+
+      const oldParentRef = personsRef.doc(oldParentPersonId);
+      const childRef = personsRef.doc(childPersonId);
+      const newParentRef = personsRef.doc(newParentPersonId);
+      const oldParentSnap = await tx.get(oldParentRef);
+      const childSnap = await tx.get(childRef);
+      const newParentSnap = await tx.get(newParentRef);
+      if (!oldParentSnap.exists || !childSnap.exists) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El árbol contiene datos inconsistentes.",
+          {reason: "inconsistent-tree-data"}
+        );
+      }
+      if (!newParentSnap.exists) {
+        throw new HttpsError("not-found", "El nuevo progenitor no existe.", {
+          reason: "new-parent-not-found",
+        });
+      }
+
+      const allParentRelationshipsSnap = await tx.get(
+        relationshipsRef.where("type", "==", "PARENT_OF")
+      );
+      const parentDocuments = allParentRelationshipsSnap.docs.map((doc) => {
+        const parentRelationship = doc.data();
+        return {
+          id: doc.id,
+          parentId: parentRelationship.fromPersonId,
+          childId: parentRelationship.toPersonId,
+          parentRole: parentRelationship.parentRole,
+        };
+      });
+      const hasInvalidGraphLink = parentDocuments.some((link) =>
+        typeof link.parentId !== "string" || !link.parentId.trim() ||
+        typeof link.childId !== "string" || !link.childId.trim() ||
+        link.parentId === link.childId
+      );
+      if (hasInvalidGraphLink) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El estado parental existente no es válido.",
+          {reason: "invalid-existing-parent-state"}
+        );
+      }
+
+      const childParentDocuments = parentDocuments.filter(
+        (link) => link.childId === childPersonId
+      );
+      if (
+        childParentDocuments.length < 1 ||
+        childParentDocuments.length > 2 ||
+        !childParentDocuments.some((link) => link.id === relationshipId)
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El estado parental existente no es válido.",
+          {reason: "invalid-existing-parent-state"}
+        );
+      }
+
+      const countsByParent = new Map<string, number>();
+      childParentDocuments.forEach((link) => {
+        countsByParent.set(
+          link.parentId,
+          (countsByParent.get(link.parentId) ?? 0) + 1
+        );
+      });
+      if ((countsByParent.get(oldParentPersonId) ?? 0) > 1) {
+        throw new HttpsError(
+          "failed-precondition",
+          "La filiación anterior está duplicada.",
+          {reason: "duplicate-existing-parent-link"}
+        );
+      }
+      if (countsByParent.has(newParentPersonId)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El nuevo progenitor ya está vinculado.",
+          {reason: "duplicate-parent-link"}
+        );
+      }
+      if ([...countsByParent.values()].some((count) => count > 1)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El estado parental existente no es válido.",
+          {reason: "invalid-existing-parent-state"}
+        );
+      }
+
+      const otherParentDocuments = childParentDocuments.filter(
+        (link) => link.id !== relationshipId
+      );
+      if (otherParentDocuments.some((link) => link.parentRole === undefined)) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El rol del otro progenitor no está definido.",
+          {reason: "existing-parent-role-unknown"}
+        );
+      }
+      if (otherParentDocuments.some((link) =>
+        normalizeParentRole(link.parentRole) === null
+      )) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El estado parental existente no es válido.",
+          {reason: "invalid-existing-parent-state"}
+        );
+      }
+      if (otherParentDocuments.some((link) =>
+        link.parentRole === resolvedParentRole
+      )) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Ese rol parental ya está ocupado.",
+          {reason: "parent-role-occupied"}
+        );
+      }
+
+      const graphWithoutTarget: ExistingParentLink[] = parentDocuments
+        .filter((link) => link.id !== relationshipId)
+        .map((link) => ({parentId: link.parentId, childId: link.childId}));
+      const graphAlreadyCyclic = graphWithoutTarget.some((link, index) =>
+        hasDirectedParentPath(
+          graphWithoutTarget.filter((_, linkIndex) => linkIndex !== index),
+          link.childId,
+          link.parentId
+        )
+      );
+      if (graphAlreadyCyclic) {
+        throw new HttpsError(
+          "failed-precondition",
+          "El estado parental existente no es válido.",
+          {reason: "invalid-existing-parent-state"}
+        );
+      }
+      if (
+        hasDirectedParentPath(
+          graphWithoutTarget,
+          childPersonId,
+          newParentPersonId
+        )
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "La reasignación crearía un ciclo.",
+          {reason: "cycle-detected"}
+        );
+      }
+
+      const timestamp = FieldValue.serverTimestamp();
+      tx.delete(oldRelationshipRef);
+      tx.set(newRelationshipRef, {
+        type: "PARENT_OF",
+        fromPersonId: newParentPersonId,
+        toPersonId: childPersonId,
+        parentRole: resolvedParentRole,
+        createdAt: timestamp,
+        updatedAt: timestamp,
+      });
+    });
+
+    return {ok: true, relationshipId: newRelationshipRef.id};
+  } catch (error) {
+    if (error instanceof HttpsError) throw error;
+    throw new HttpsError("internal", "No se pudo reasignar el progenitor.");
   }
 });
 

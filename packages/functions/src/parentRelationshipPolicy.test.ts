@@ -105,6 +105,7 @@ import {
   createUnion,
   deletePerson,
   deleteRelationship,
+  reassignParentRelationship,
   updatePerson,
 } from "./index.js";
 import {
@@ -941,13 +942,588 @@ describe("deleteRelationship", () => {
     );
     const implementation = source.slice(
       source.indexOf("export const deleteRelationship"),
-      source.indexOf("/**\n * LEGACY / TEMPORAL", source.indexOf("export const deleteRelationship"))
+      source.indexOf(
+        "/**\n * Sustituye atómicamente una filiación",
+        source.indexOf("export const deleteRelationship")
+      )
     );
     expect(implementation).not.toMatch(
       /firebase-admin\/auth|getAuth|deleteUser|auth\(\)|WriteBatch|BulkWriter|collectionGroup|tx\.set|tx\.update/
     );
     expect(implementation).not.toMatch(
       /personsRef\.doc\([^)]*\)\.delete|treeRef\.update/
+    );
+  });
+});
+
+type ReassignRelationshipData = {
+  type?: unknown;
+  fromPersonId?: unknown;
+  toPersonId?: unknown;
+  parentRole?: unknown;
+};
+
+const parentDocument = (
+  id: string,
+  fromPersonId: unknown,
+  toPersonId: unknown,
+  parentRole?: unknown
+) => ({
+  id,
+  ref: {id, path: `trees/tree/relationships/${id}`},
+  data: () => ({
+    type: "PARENT_OF",
+    fromPersonId,
+    toPersonId,
+    ...(parentRole === undefined ? {} : {parentRole}),
+  }),
+});
+
+const validReassignRequest = (overrides: Record<string, unknown> = {}) => ({
+  auth: {uid: "owner"},
+  data: {
+    treeId: "tree",
+    relationshipId: "old-link",
+    newParentPersonId: "new-parent",
+    ...overrides,
+  },
+});
+
+describe("reassignParentRelationship", () => {
+  let treeExists: boolean;
+  let treeData: Record<string, unknown>;
+  let targetExists: boolean;
+  let targetData: ReassignRelationshipData;
+  let existingPersonIds: Set<string>;
+  let parentDocuments: ReturnType<typeof parentDocument>[];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    treeExists = true;
+    treeData = {
+      ownerId: "owner",
+      rootPersonId: "root",
+      updatedAt: "unchanged",
+    };
+    targetExists = true;
+    targetData = {
+      type: "PARENT_OF",
+      fromPersonId: "old-parent",
+      toPersonId: "child",
+      parentRole: "father",
+    };
+    existingPersonIds = new Set([
+      "root", "old-parent", "new-parent", "child", "other-parent",
+      "ancestor", "descendant",
+    ]);
+    parentDocuments = [
+      parentDocument("old-link", "old-parent", "child", "father"),
+    ];
+
+    addRelationshipFirestore.transactionGet.mockImplementation(
+      async (reference) => {
+        if (reference === addRelationshipFirestore.treeRef) {
+          return {exists: treeExists, data: () => treeData};
+        }
+        if (reference?.kind === "relationship") {
+          return {exists: targetExists, data: () => targetData};
+        }
+        if (reference?.kind === "person") {
+          return {
+            exists: existingPersonIds.has(reference.id),
+            data: () => ({ownerId: "ignored-person-owner"}),
+          };
+        }
+        if (reference === addRelationshipFirestore.duplicateQuery) {
+          return {docs: parentDocuments, size: parentDocuments.length};
+        }
+        throw new Error("Referencia de lectura inesperada");
+      }
+    );
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => callback({
+        get: addRelationshipFirestore.transactionGet,
+        delete: addRelationshipFirestore.transactionDelete,
+        set: addRelationshipFirestore.transactionSet,
+        update: addRelationshipFirestore.transactionUpdate,
+      })
+    );
+  });
+
+  const expectReassignError = async (
+    request: ReturnType<typeof validReassignRequest>,
+    code: string,
+    reason?: string
+  ) => {
+    const error = await reassignParentRelationship.run(request as never)
+      .catch((value) => value);
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe(code);
+    if (reason) expect(error.details).toEqual({reason});
+    return error;
+  };
+
+  it("exige Auth antes de Firestore", async () => {
+    await expectReassignError(
+      {...validReassignRequest(), auth: undefined} as never,
+      "unauthenticated"
+    );
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["treeId", undefined, "invalid-tree-id"],
+    ["treeId", 42, "invalid-tree-id"],
+    ["treeId", "", "invalid-tree-id"],
+    ["treeId", "   ", "invalid-tree-id"],
+    ["treeId", "tree/other", "invalid-tree-id"],
+    ["relationshipId", undefined, "invalid-relationship-id"],
+    ["relationshipId", 42, "invalid-relationship-id"],
+    ["relationshipId", "", "invalid-relationship-id"],
+    ["relationshipId", "   ", "invalid-relationship-id"],
+    ["relationshipId", "rel/other", "invalid-relationship-id"],
+    ["newParentPersonId", undefined, "invalid-new-parent-id"],
+    ["newParentPersonId", 42, "invalid-new-parent-id"],
+    ["newParentPersonId", "", "invalid-new-parent-id"],
+    ["newParentPersonId", "   ", "invalid-new-parent-id"],
+    ["newParentPersonId", "person/other", "invalid-new-parent-id"],
+  ])("rechaza payload %s=%s", async (field, value, reason) => {
+    await expectReassignError(
+      validReassignRequest({[field]: value}), "invalid-argument", reason
+    );
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+  });
+
+  it("normaliza los tres IDs e ignora campos adicionales", async () => {
+    const result = await reassignParentRelationship.run(validReassignRequest({
+      treeId: " tree ",
+      relationshipId: " old-link ",
+      newParentPersonId: " new-parent ",
+      ownerId: "attacker",
+      childPersonId: "attacker-child",
+      oldParentPersonId: "attacker-parent",
+    }) as never);
+    expect(result).toEqual({ok: true, relationshipId: "new-relationship"});
+  });
+
+  it("rechaza árbol inexistente", async () => {
+    treeExists = false;
+    await expectReassignError(
+      validReassignRequest(), "not-found", "tree-not-found"
+    );
+  });
+
+  it("autoriza solo mediante tree.ownerId", async () => {
+    treeData.ownerId = "another-owner";
+    await expectReassignError(
+      validReassignRequest(), "permission-denied", "not-tree-owner"
+    );
+  });
+
+  it("aísla relación y personas al árbol solicitado", async () => {
+    await reassignParentRelationship.run(validReassignRequest() as never);
+    expect(addRelationshipFirestore.db.collection).toHaveBeenCalledWith("trees");
+    expect(addRelationshipFirestore.transactionDelete.mock.calls[0][0])
+      .toMatchObject({id: "old-link", kind: "relationship"});
+    expect(addRelationshipFirestore.transactionDelete)
+      .not.toHaveBeenCalledWith({path: "trees/other/relationships/old-link"});
+  });
+
+  it("rechaza relación inexistente", async () => {
+    targetExists = false;
+    await expectReassignError(
+      validReassignRequest(), "not-found", "relationship-not-found"
+    );
+  });
+
+  it.each([
+    ["PARTNER_OF", {type: "PARTNER_OF", fromPersonId: "old-parent", toPersonId: "child"}, "relationship-not-parent"],
+    ["tipo desconocido", {type: "RELATED_TO", fromPersonId: "old-parent", toPersonId: "child"}, "relationship-not-parent"],
+  ])("rechaza target %s", async (_name, data, reason) => {
+    targetData = data;
+    await expectReassignError(
+      validReassignRequest(), "failed-precondition", reason
+    );
+  });
+
+  it.each([
+    ["from ausente", {type: "PARENT_OF", toPersonId: "child"}],
+    ["from no string", {type: "PARENT_OF", fromPersonId: 42, toPersonId: "child"}],
+    ["from vacío", {type: "PARENT_OF", fromPersonId: "   ", toPersonId: "child"}],
+    ["to ausente", {type: "PARENT_OF", fromPersonId: "old-parent"}],
+    ["to no string", {type: "PARENT_OF", fromPersonId: "old-parent", toPersonId: 42}],
+    ["to vacío", {type: "PARENT_OF", fromPersonId: "old-parent", toPersonId: "   "}],
+    ["self target", {type: "PARENT_OF", fromPersonId: "child", toPersonId: "child"}],
+    ["role inválido", {type: "PARENT_OF", fromPersonId: "old-parent", toPersonId: "child", parentRole: "guardian"}],
+  ])("bloquea target corrupto: %s", async (_name, data) => {
+    targetData = data;
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "inconsistent-tree-data"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["father", "father"],
+    ["mother", "mother"],
+  ])("conserva stored role %s", async (storedRole, expectedRole) => {
+    targetData.parentRole = storedRole;
+    parentDocuments = [
+      parentDocument("old-link", "old-parent", "child", storedRole),
+    ];
+    await reassignParentRelationship.run(validReassignRequest() as never);
+    expect(addRelationshipFirestore.transactionSet.mock.calls[0][1])
+      .toMatchObject({parentRole: expectedRole});
+  });
+
+  it.each(["father", "mother"])(
+    "rechaza request role cuando stored role es %s",
+    async (storedRole) => {
+      targetData.parentRole = storedRole;
+      await expectReassignError(
+        validReassignRequest({parentRole: storedRole}),
+        "invalid-argument",
+        "unexpected-parent-role"
+      );
+    }
+  );
+
+  it("exige role para target histórico", async () => {
+    delete targetData.parentRole;
+    parentDocuments = [
+      parentDocument("old-link", "old-parent", "child"),
+    ];
+    await expectReassignError(
+      validReassignRequest(), "invalid-argument", "invalid-parent-role"
+    );
+  });
+
+  it.each(["father", "mother"] as const)(
+    "normaliza target histórico como %s",
+    async (parentRole) => {
+      delete targetData.parentRole;
+      parentDocuments = [
+        parentDocument("old-link", "old-parent", "child"),
+      ];
+      await reassignParentRelationship.run(
+        validReassignRequest({parentRole}) as never
+      );
+      expect(addRelationshipFirestore.transactionSet.mock.calls[0][1])
+        .toMatchObject({parentRole});
+    }
+  );
+
+  it("rechaza role inválido para target histórico", async () => {
+    delete targetData.parentRole;
+    await expectReassignError(
+      validReassignRequest({parentRole: "guardian"}),
+      "invalid-argument",
+      "invalid-parent-role"
+    );
+  });
+
+  it.each([
+    ["old parent", "old-parent", "failed-precondition", "inconsistent-tree-data"],
+    ["child", "child", "failed-precondition", "inconsistent-tree-data"],
+    ["new parent", "new-parent", "not-found", "new-parent-not-found"],
+  ])("rechaza persona inexistente: %s", async (_name, id, code, reason) => {
+    existingPersonIds.delete(id);
+    await expectReassignError(validReassignRequest(), code, reason);
+  });
+
+  it("rechaza mismo progenitor", async () => {
+    await expectReassignError(
+      validReassignRequest({newParentPersonId: "old-parent"}),
+      "failed-precondition",
+      "same-parent"
+    );
+  });
+
+  it("rechaza new parent igual al child", async () => {
+    await expectReassignError(
+      validReassignRequest({newParentPersonId: "child"}),
+      "failed-precondition",
+      "self-parent"
+    );
+  });
+
+  it.each([
+    ["persona desconectada", "new-parent", "old-parent", "child"],
+    ["root nuevo", "root", "old-parent", "child"],
+    ["root antiguo", "new-parent", "root", "child"],
+    ["root hijo", "new-parent", "old-parent", "root"],
+  ])("permite %s", async (_name, newId, oldId, childId) => {
+    targetData.fromPersonId = oldId;
+    targetData.toPersonId = childId;
+    parentDocuments = [parentDocument("old-link", oldId, childId, "father")];
+    const result = await reassignParentRelationship.run(
+      validReassignRequest({newParentPersonId: newId}) as never
+    );
+    expect(result.ok).toBe(true);
+  });
+
+  it("bloquea duplicado del vínculo antiguo", async () => {
+    parentDocuments.push(
+      parentDocument("old-duplicate", "old-parent", "child", "father")
+    );
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "duplicate-existing-parent-link"
+    );
+  });
+
+  it("bloquea new parent ya conectado", async () => {
+    parentDocuments.push(
+      parentDocument("new-link", "new-parent", "child", "mother")
+    );
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "duplicate-parent-link"
+    );
+  });
+
+  it("bloquea duplicado del segundo parent", async () => {
+    parentDocuments.push(
+      parentDocument("other-1", "other-parent", "child", "mother"),
+      parentDocument("other-2", "other-parent", "child", "mother")
+    );
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "invalid-existing-parent-state"
+    );
+  });
+
+  it("permite uno o dos padres válidos y conserva el segundo vínculo", async () => {
+    const second = parentDocument(
+      "other-link", "other-parent", "child", "mother"
+    );
+    parentDocuments.push(second);
+    await reassignParentRelationship.run(validReassignRequest() as never);
+    expect(addRelationshipFirestore.transactionDelete)
+      .not.toHaveBeenCalledWith(second.ref);
+  });
+
+  it("bloquea más de dos documentos parentales", async () => {
+    parentDocuments.push(
+      parentDocument("other-1", "other-parent", "child", "mother"),
+      parentDocument("other-2", "ancestor", "child", "mother")
+    );
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "invalid-existing-parent-state"
+    );
+  });
+
+  it.each(["father", "mother"])(
+    "bloquea otro parent con role ocupado %s",
+    async (parentRole) => {
+      targetData.parentRole = parentRole;
+      parentDocuments = [
+        parentDocument("old-link", "old-parent", "child", parentRole),
+        parentDocument("other", "other-parent", "child", parentRole),
+      ];
+      await expectReassignError(
+        validReassignRequest(),
+        "failed-precondition",
+        "parent-role-occupied"
+      );
+    }
+  );
+
+  it("bloquea otro parent histórico sin role", async () => {
+    parentDocuments.push(
+      parentDocument("other", "other-parent", "child")
+    );
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "existing-parent-role-unknown"
+    );
+  });
+
+  it("bloquea role corrupto en el otro parent", async () => {
+    parentDocuments.push(
+      parentDocument("other", "other-parent", "child", "guardian")
+    );
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "invalid-existing-parent-state"
+    );
+  });
+
+  it("bloquea link global estructuralmente corrupto", async () => {
+    parentDocuments.push(parentDocument("corrupt", "", "descendant"));
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "invalid-existing-parent-state"
+    );
+  });
+
+  it.each([
+    ["directo", [parentDocument("path", "child", "new-parent", "mother")]],
+    ["transitivo", [
+      parentDocument("path-1", "child", "descendant", "mother"),
+      parentDocument("path-2", "descendant", "new-parent", "father"),
+    ]],
+  ])("bloquea ciclo %s", async (_name, pathDocuments) => {
+    parentDocuments.push(...pathDocuments);
+    await expectReassignError(
+      validReassignRequest(), "failed-precondition", "cycle-detected"
+    );
+  });
+
+  it("excluye target del grafo hipotético y permite escenario sin ciclo", async () => {
+    parentDocuments.push(
+      parentDocument("other-edge", "old-parent", "descendant", "mother")
+    );
+    await reassignParentRelationship.run(validReassignRequest() as never);
+    expect(addRelationshipFirestore.transactionSet).toHaveBeenCalledOnce();
+  });
+
+  it("bloquea un ciclo preexistente sin repararlo", async () => {
+    parentDocuments.push(
+      parentDocument("cycle-a", "ancestor", "descendant", "father"),
+      parentDocument("cycle-b", "descendant", "ancestor", "mother")
+    );
+    await expectReassignError(
+      validReassignRequest(),
+      "failed-precondition",
+      "invalid-existing-parent-state"
+    );
+  });
+
+  it("preserva PARTNER_OF, personas, tree y timestamps", async () => {
+    const partnerRef = {id: "partner", kind: "relationship"};
+    const originalTree = {...treeData};
+    await reassignParentRelationship.run(validReassignRequest() as never);
+    expect(treeData).toEqual(originalTree);
+    expect(addRelationshipFirestore.transactionDelete)
+      .not.toHaveBeenCalledWith(partnerRef);
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.personUpdate).not.toHaveBeenCalled();
+  });
+
+  it("crea un nuevo documento whitelisted con timestamps nuevos", async () => {
+    const result = await reassignParentRelationship.run(
+      validReassignRequest() as never
+    );
+    expect(result).toEqual({ok: true, relationshipId: "new-relationship"});
+    expect(result.relationshipId).not.toBe("old-link");
+    expect(addRelationshipFirestore.transactionSet).toHaveBeenCalledWith(
+      expect.objectContaining({id: "new-relationship"}),
+      {
+        type: "PARENT_OF",
+        fromPersonId: "new-parent",
+        toPersonId: "child",
+        parentRole: "father",
+        createdAt: "server-timestamp",
+        updatedAt: "server-timestamp",
+      }
+    );
+    expect(Object.keys(
+      addRelationshipFirestore.transactionSet.mock.calls[0][1]
+    ).sort()).toEqual([
+      "createdAt", "fromPersonId", "parentRole", "toPersonId", "type",
+      "updatedAt",
+    ]);
+  });
+
+  it("realiza todas las lecturas antes de exactamente dos writes", async () => {
+    await reassignParentRelationship.run(validReassignRequest() as never);
+    const lastRead = Math.max(
+      ...addRelationshipFirestore.transactionGet.mock.invocationCallOrder
+    );
+    const deleteOrder = addRelationshipFirestore.transactionDelete
+      .mock.invocationCallOrder[0];
+    const setOrder = addRelationshipFirestore.transactionSet
+      .mock.invocationCallOrder[0];
+    expect(lastRead).toBeLessThan(deleteOrder);
+    expect(deleteOrder).toBeLessThan(setOrder);
+    expect(addRelationshipFirestore.transactionDelete).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionSet).toHaveBeenCalledOnce();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.runTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("fallo de validación produce cero escrituras", async () => {
+    existingPersonIds.delete("new-parent");
+    await expectReassignError(
+      validReassignRequest(), "not-found", "new-parent-not-found"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionSet).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.transactionUpdate).not.toHaveBeenCalled();
+  });
+
+  it("reutiliza el mismo nuevo ref durante retries simulados", async () => {
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => {
+        const tx = {
+          get: addRelationshipFirestore.transactionGet,
+          delete: addRelationshipFirestore.transactionDelete,
+          set: addRelationshipFirestore.transactionSet,
+          update: addRelationshipFirestore.transactionUpdate,
+        };
+        await callback(tx);
+        return callback(tx);
+      }
+    );
+    const result = await reassignParentRelationship.run(
+      validReassignRequest() as never
+    );
+    const newRefs = addRelationshipFirestore.transactionSet.mock.calls
+      .map(([reference]) => reference);
+    expect(newRefs).toHaveLength(2);
+    expect(newRefs[0]).toBe(newRefs[1]);
+    expect(result).toEqual({ok: true, relationshipId: "new-relationship"});
+  });
+
+  it("segunda llamada al old ID devuelve relationship-not-found", async () => {
+    await reassignParentRelationship.run(validReassignRequest() as never);
+    vi.clearAllMocks();
+    targetExists = false;
+    addRelationshipFirestore.runTransaction.mockImplementation(
+      async (callback) => callback({
+        get: addRelationshipFirestore.transactionGet,
+        delete: addRelationshipFirestore.transactionDelete,
+        set: addRelationshipFirestore.transactionSet,
+      })
+    );
+    await expectReassignError(
+      validReassignRequest(), "not-found", "relationship-not-found"
+    );
+    expect(addRelationshipFirestore.transactionDelete).not.toHaveBeenCalled();
+  });
+
+  it("sanitiza errores inesperados", async () => {
+    addRelationshipFirestore.transactionGet.mockRejectedValueOnce(
+      new Error("sensitive-sdk-error")
+    );
+    const error = await expectReassignError(validReassignRequest(), "internal");
+    expect(error.message).not.toContain("sensitive-sdk-error");
+  });
+
+  it("no usa Auth, batches, updates ni writes PARTNER_OF", async () => {
+    const source = await import("node:fs/promises").then(({readFile}) =>
+      readFile(`${process.cwd()}/src/index.ts`, "utf8")
+    );
+    const start = source.indexOf("export const reassignParentRelationship");
+    const end = source.indexOf("/**\n * LEGACY / TEMPORAL", start);
+    const implementation = source.slice(start, end);
+    expect(implementation).not.toMatch(
+      /getAuth|deleteUser|updateUser|auth\(\)|WriteBatch|BulkWriter|collectionGroup|tx\.update/
+    );
+    expect(implementation).not.toMatch(
+      /type:\s*["']PARTNER_OF|personsRef\.doc\([^)]*\)\.delete|treeRef\.update/
     );
   });
 });
