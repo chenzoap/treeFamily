@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpsError } from "firebase-functions/v2/https";
 
 const addRelationshipFirestore = vi.hoisted(() => {
@@ -2213,6 +2213,53 @@ describe("API pública legacy", () => {
 
   it("no exporta addRelationship en la API pública", () => {
     expect(functionExports).not.toHaveProperty("addRelationship");
+  });
+});
+
+describe("superficie pública por entorno", () => {
+  const loadFunctionsEntry = async () => {
+    const loaded = await import("./functionsEntry.js") as unknown as {
+      default?: Record<string, unknown>;
+    } & Record<string, unknown>;
+    return loaded.default ?? loaded;
+  };
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.resetModules();
+  });
+
+  it("excluye claimTreeOwnership fuera del Emulator sin perder Functions productivas", async () => {
+    vi.stubEnv("FIREBASE_EMULATOR_HUB", "");
+    vi.stubEnv("FUNCTIONS_EMULATOR", "");
+    vi.resetModules();
+
+    const exported = await loadFunctionsEntry();
+    const implementationKeys = Object.keys(functionExports);
+
+    expect(exported).not.toHaveProperty("claimTreeOwnership");
+    expect(Object.keys(exported).sort()).toEqual(
+      implementationKeys
+        .filter((key) => key !== "claimTreeOwnership")
+        .sort()
+    );
+  });
+
+  it.each([
+    ["FUNCTIONS_EMULATOR", "true"],
+    ["FIREBASE_EMULATOR_HUB", "localhost:4400"],
+  ])("incluye claimTreeOwnership con la señal %s", async (name, value) => {
+    vi.stubEnv("FIREBASE_EMULATOR_HUB", "");
+    vi.stubEnv("FUNCTIONS_EMULATOR", "");
+    vi.stubEnv(name, value);
+    vi.resetModules();
+
+    const exported = await loadFunctionsEntry();
+
+    expect(exported).toHaveProperty("claimTreeOwnership");
+    expect(Object.keys(exported).sort()).toEqual(
+      Object.keys(functionExports).sort()
+    );
   });
 });
 

@@ -103,15 +103,66 @@ const start = async () => {
       cwd: projectRoot,
       stdio: "inherit",
       shell: false,
+      detached: true,
     },
   );
 
+  let shuttingDown = false;
+
+  const requestShutdown = (signal) => {
+    if (shuttingDown) {
+      console.log(
+        `[safe-firebase] Shutdown ya solicitado; ignorando ${signal} adicional.`,
+      );
+      return;
+    }
+
+    shuttingDown = true;
+    console.log(
+      `[safe-firebase] ${signal} recibido; solicitando shutdown limpio...`,
+    );
+
+    try {
+      if (!firebaseProcess.kill(signal)) {
+        console.error(
+          `[safe-firebase] No se pudo reenviar ${signal} a Firebase Emulator Suite.`,
+        );
+        process.exitCode = 1;
+      }
+    } catch (error) {
+      console.error(
+        `[safe-firebase] No se pudo reenviar ${signal}: ${error.message}`,
+      );
+      process.exitCode = 1;
+    }
+  };
+
+  const handleSigint = () => requestShutdown("SIGINT");
+  const handleSigterm = () => requestShutdown("SIGTERM");
+  const handleSighup = () => requestShutdown("SIGHUP");
+
+  const removeSignalHandlers = () => {
+    process.off("SIGINT", handleSigint);
+    process.off("SIGTERM", handleSigterm);
+    process.off("SIGHUP", handleSighup);
+  };
+
+  process.on("SIGINT", handleSigint);
+  process.on("SIGTERM", handleSigterm);
+  process.on("SIGHUP", handleSighup);
+
   firebaseProcess.once("error", (error) => {
+    removeSignalHandlers();
     console.error(`No se pudo iniciar Firebase Emulator Suite: ${error.message}`);
     process.exitCode = 1;
   });
 
-  firebaseProcess.once("exit", (code, signal) => {
+  firebaseProcess.once("close", (code, signal) => {
+    removeSignalHandlers();
+    console.log(
+      `[safe-firebase] Firebase finalizó (code=${code}, signal=${signal}).`,
+    );
+
     if (signal) {
       console.error(`Firebase Emulator Suite terminó por la señal ${signal}.`);
       process.exitCode = 1;
