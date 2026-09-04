@@ -101,7 +101,6 @@ vi.mock("firebase-admin/firestore", () => ({
 
 import {
   addPartnerToPerson,
-  addRelationship,
   createUnion,
   deletePerson,
   deleteRelationship,
@@ -109,6 +108,7 @@ import {
   updatePartnerRelationshipStatus,
   updatePerson,
 } from "./index.js";
+import * as functionExports from "./index.js";
 import {
   hasDirectedParentPath,
   normalizeParentRole,
@@ -1917,7 +1917,7 @@ describe("updatePartnerRelationshipStatus", () => {
       readFile(`${process.cwd()}/src/index.ts`, "utf8")
     );
     const start = source.indexOf("export const updatePartnerRelationshipStatus");
-    const end = source.indexOf("/**\n * LEGACY / TEMPORAL", start);
+    const end = source.indexOf("export const createUnion", start);
     expect(source.slice(start, end)).not.toContain(
       ".where(\"type\", \"==\", \"PARENT_OF\")"
     );
@@ -1996,7 +1996,7 @@ describe("updatePartnerRelationshipStatus", () => {
       readFile(`${process.cwd()}/src/index.ts`, "utf8")
     );
     const start = source.indexOf("export const updatePartnerRelationshipStatus");
-    const end = source.indexOf("/**\n * LEGACY / TEMPORAL", start);
+    const end = source.indexOf("export const createUnion", start);
     const implementation = source.slice(start, end);
     expect(implementation).not.toMatch(
       /getAuth|deleteUser|updateUser|auth\(\)|WriteBatch|BulkWriter|collectionGroup|tx\.set|tx\.delete/
@@ -2206,82 +2206,13 @@ describe("updatePerson", () => {
   });
 });
 
-describe("addRelationship", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    addRelationshipFirestore.ownershipGet.mockResolvedValue({
-      exists: true,
-      data: () => ({ ownerId: "owner" }),
-    });
-    addRelationshipFirestore.personGet.mockResolvedValue({ exists: true });
-    addRelationshipFirestore.duplicateGet.mockResolvedValue({ empty: true });
-    addRelationshipFirestore.relationshipSet.mockResolvedValue(undefined);
-    addRelationshipFirestore.transactionGet.mockImplementation(
-      async (reference) =>
-        reference === addRelationshipFirestore.duplicateQuery ?
-          { empty: true, docs: [] } :
-          { exists: true }
-    );
-    addRelationshipFirestore.runTransaction.mockImplementation(
-      async (callback) =>
-        callback({
-          get: addRelationshipFirestore.transactionGet,
-          set: addRelationshipFirestore.transactionSet,
-          update: addRelationshipFirestore.transactionUpdate,
-        })
-    );
+describe("API pública legacy", () => {
+  it("no exporta addPerson en la API pública", () => {
+    expect(functionExports).not.toHaveProperty("addPerson");
   });
 
-  it("bloquea PARENT_OF antes de consultar o escribir en Firestore", async () => {
-    const request = {
-      auth: { uid: "owner" },
-      data: {
-        treeId: "tree",
-        type: "PARENT_OF",
-        fromPersonId: "parent",
-        toPersonId: "child",
-      },
-    };
-
-    const error = await addRelationship.run(request as never).catch((value) => value);
-
-    expect(error).toBeInstanceOf(HttpsError);
-    expect(error.code).toBe("failed-precondition");
-    expect(error.details).toEqual({
-      reason: "legacy-parent-relationship-disabled",
-    });
-    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
-    expect(addRelationshipFirestore.ownershipGet).not.toHaveBeenCalled();
-    expect(addRelationshipFirestore.personGet).not.toHaveBeenCalled();
-    expect(addRelationshipFirestore.duplicateGet).not.toHaveBeenCalled();
-    expect(addRelationshipFirestore.relationshipSet).not.toHaveBeenCalled();
-    expect(addRelationshipFirestore.batch).not.toHaveBeenCalled();
-    expect(addRelationshipFirestore.runTransaction).not.toHaveBeenCalled();
-  });
-
-  it("mantiene PARTNER_OF en el flujo normal de validación y escritura", async () => {
-    const result = await addRelationship.run({
-      auth: { uid: "owner" },
-      data: {
-        treeId: "tree",
-        type: "PARTNER_OF",
-        fromPersonId: "person-b",
-        toPersonId: "person-a",
-      },
-    } as never);
-
-    expect(result).toEqual({ relationshipId: "new-relationship" });
-    expect(addRelationshipFirestore.ownershipGet).toHaveBeenCalledOnce();
-    expect(addRelationshipFirestore.personGet).toHaveBeenCalledTimes(2);
-    expect(addRelationshipFirestore.duplicateGet).toHaveBeenCalledTimes(2);
-    expect(addRelationshipFirestore.relationshipSet).toHaveBeenCalledWith({
-      type: "PARTNER_OF",
-      fromPersonId: "person-a",
-      toPersonId: "person-b",
-      relationshipStatus: "unknown",
-      createdAt: "server-timestamp",
-      updatedAt: "server-timestamp",
-    });
+  it("no exporta addRelationship en la API pública", () => {
+    expect(functionExports).not.toHaveProperty("addRelationship");
   });
 });
 
