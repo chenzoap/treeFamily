@@ -1023,6 +1023,7 @@ export const renderFullTree = (
 
     const marker = unionGroup
       .append("g")
+      .attr("data-union-id", unionNode.id)
       .attr(
         "transform",
         `translate(${unionNode.x},${unionNode.y})`
@@ -1076,6 +1077,8 @@ export const renderFullTree = (
 
     const group = personGroup
       .append("g")
+      .attr("data-person-id", node.id)
+      .attr("data-selected", String(isSelected))
       .attr("transform", `translate(${node.x},${node.y})`);
 
     if (isRoot || isSelected) {

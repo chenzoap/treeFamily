@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>P06 TreeView Stress Harness</title>
+    <style>
+      html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      #root > div { width: 100%; height: 100%; }
+      #root svg { display: block; width: 100%; height: 100%; }
+      #p06-info { position: fixed; top: 8px; left: 8px; z-index: 20; font: 12px sans-serif; }
+    </style>
+  </head>
+  <body>
+    <output id="p06-info">Inicializando TreeView P06…</output>
+    <div id="root"></div>
+    <script type="module" src="/src/test/p06TreeViewHarness.tsx"></script>
+  </body>
+</html>
