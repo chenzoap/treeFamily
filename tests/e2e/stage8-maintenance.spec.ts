@@ -1,6 +1,108 @@
-import {expect, test, type Locator, type Page} from "@playwright/test";
+import {expect, test as base, type Locator, type Page} from "@playwright/test";
+import {getApps, initializeApp} from "firebase-admin/app";
+import {getAuth} from "firebase-admin/auth";
+import {getFirestore} from "firebase-admin/firestore";
 
 const PASSWORD = "Test123456!";
+const PROJECT_ID = "tree-gen-chenzoap-2026";
+const FIRESTORE_EMULATOR_HOST = "127.0.0.1:8080";
+const FIREBASE_AUTH_EMULATOR_HOST = "127.0.0.1:9099";
+const ADMIN_APP_NAME = "p08-stage8-maintenance-cleanup";
+
+type TestResources = {
+  email?: string;
+  treeId?: string;
+};
+
+type P08Fixtures = {
+  resources: TestResources;
+};
+
+function configureLocalEmulatorHost(name: string, expected: string): void {
+  const current = process.env[name];
+  if (current && current !== expected) {
+    throw new Error(
+      `[P08-cleanup] ${name} debe ser ${expected}; recibido: ${current}.`
+    );
+  }
+  process.env[name] = expected;
+}
+
+function assertLocalEmulatorHosts(): void {
+  if (
+    process.env.FIRESTORE_EMULATOR_HOST !== FIRESTORE_EMULATOR_HOST ||
+    process.env.FIREBASE_AUTH_EMULATOR_HOST !== FIREBASE_AUTH_EMULATOR_HOST ||
+    adminApp.options.projectId !== PROJECT_ID
+  ) {
+    throw new Error(
+      "[P08-cleanup] Cleanup rechazado: los hosts locales del Emulator no coinciden."
+    );
+  }
+}
+
+configureLocalEmulatorHost("FIRESTORE_EMULATOR_HOST", FIRESTORE_EMULATOR_HOST);
+configureLocalEmulatorHost("FIREBASE_AUTH_EMULATOR_HOST", FIREBASE_AUTH_EMULATOR_HOST);
+
+const adminApp =
+  getApps().find((app) => app.name === ADMIN_APP_NAME) ??
+  initializeApp({projectId: PROJECT_ID}, ADMIN_APP_NAME);
+
+async function cleanupTestResources(resources: TestResources): Promise<void> {
+  assertLocalEmulatorHosts();
+  const auth = getAuth(adminApp);
+  const firestore = getFirestore(adminApp);
+  let user: Awaited<ReturnType<typeof auth.getUserByEmail>> | undefined;
+
+  if (resources.email) {
+    try {
+      user = await auth.getUserByEmail(resources.email);
+    } catch (error) {
+      if (
+        typeof error !== "object" ||
+        error === null ||
+        !("code" in error) ||
+        error.code !== "auth/user-not-found"
+      ) {
+        throw error;
+      }
+    }
+  }
+
+  if (resources.treeId) {
+    await firestore.recursiveDelete(firestore.doc(`trees/${resources.treeId}`));
+  } else if (user) {
+    const ownedTrees = await firestore
+      .collection("trees")
+      .where("ownerId", "==", user.uid)
+      .get();
+    for (const tree of ownedTrees.docs) {
+      await firestore.recursiveDelete(tree.ref);
+    }
+  }
+
+  if (user) await auth.deleteUser(user.uid);
+}
+
+const test = base.extend<P08Fixtures>({
+  resources: async ({}, use, testInfo) => {
+    const resources: TestResources = {};
+    try {
+      await use(resources);
+    } finally {
+      try {
+        await cleanupTestResources(resources);
+      } catch (error) {
+        console.error(
+          `[P08-cleanup] Falló cleanup de ${testInfo.title}: ` +
+            `treeId=${resources.treeId ?? "no registrado"}, ` +
+            `email=${resources.email ?? "no registrado"}.`,
+          error
+        );
+        throw error;
+      }
+    }
+  },
+});
 
 function uniqueEmail(prefix: string): string {
   return `${prefix}.${Date.now()}.${Math.floor(Math.random() * 100000)}@example.com`;
@@ -16,12 +118,15 @@ function relationshipRow(page: Page, label: string): Locator {
 
 async function createIsolatedTree(
   page: Page,
+  resources: TestResources,
   prefix: string,
   rootFirstName: string,
   rootLastName: string
 ): Promise<void> {
+  const email = uniqueEmail(prefix);
+  resources.email = email;
   await page.goto("/signup");
-  await page.getByLabel(/Correo electrónico/i).fill(uniqueEmail(prefix));
+  await page.getByLabel(/Correo electrónico/i).fill(email);
   await page.getByLabel(/^Contraseña$/i).fill(PASSWORD);
   await page.getByLabel(/Confirmar contraseña/i).fill(PASSWORD);
   await page.getByRole("button", {name: "Crear cuenta"}).click();
@@ -34,6 +139,15 @@ async function createIsolatedTree(
   await page.getByRole("button", {name: "Crear mi árbol"}).click();
 
   await expect(page).toHaveURL(/\/tree$/);
+  resources.treeId = await page.evaluate(() => {
+    const stored = window.localStorage.getItem("family-tree-storage");
+    if (!stored) throw new Error("No se encontró el estado del árbol temporal P08.");
+    const parsed = JSON.parse(stored) as {state?: {treeId?: unknown}};
+    if (typeof parsed.state?.treeId !== "string" || !parsed.state.treeId) {
+      throw new Error("El estado P08 no contiene un treeId temporal válido.");
+    }
+    return parsed.state.treeId;
+  });
   await expect(page.getByRole("heading", {name: /Mi árbol familiar/i})).toBeVisible();
   await expect(personSelector(page).locator("option:checked")).toHaveText(
     `${rootFirstName} ${rootLastName}`
@@ -81,12 +195,12 @@ async function selectPerson(page: Page, name: string): Promise<void> {
 }
 
 test.describe("Mantenimiento seguro de Etapa 8", () => {
-  test("edita una persona y conserva la selección", async ({page}) => {
+  test("edita una persona y conserva la selección", async ({page, resources}) => {
     const rootName = "Raiz Edicion";
     const originalName = "Padre Original";
     const updatedName = "Padre Actualizado";
 
-    await createIsolatedTree(page, "stage8.edit", "Raiz", "Edicion");
+    await createIsolatedTree(page, resources, "stage8.edit", "Raiz", "Edicion");
     await addParent(page, "padre", "Padre", "Original");
     await selectPerson(page, originalName);
 
@@ -101,11 +215,11 @@ test.describe("Mantenimiento seguro de Etapa 8", () => {
     await expect(personSelector(page).locator("option", {hasText: rootName})).toHaveCount(1);
   });
 
-  test("elimina una persona no-root y protege la raíz", async ({page}) => {
+  test("elimina una persona no-root y protege la raíz", async ({page, resources}) => {
     const rootName = "Raiz Eliminacion";
     const deletedName = "Familiar Eliminable";
 
-    await createIsolatedTree(page, "stage8.delete-person", "Raiz", "Eliminacion");
+    await createIsolatedTree(page, resources, "stage8.delete-person", "Raiz", "Eliminacion");
     await addParent(page, "padre", "Familiar", "Eliminable");
     await selectPerson(page, deletedName);
 
@@ -123,14 +237,14 @@ test.describe("Mantenimiento seguro de Etapa 8", () => {
     await expect(page.getByText("La persona principal del árbol no puede eliminarse.")).toBeVisible();
   });
 
-  test("quita una filiación sin eliminar personas", async ({page}) => {
+  test("quita una filiación sin eliminar personas", async ({page, resources}) => {
     const rootName = "Hija Filiacion";
     const fatherName = "Padre Filiacion";
     const motherName = "Madre Filiacion";
     const fatherLabel = `Hijo/a de ${fatherName}`;
     const motherLabel = `Hijo/a de ${motherName}`;
 
-    await createIsolatedTree(page, "stage8.unlink-parent", "Hija", "Filiacion");
+    await createIsolatedTree(page, resources, "stage8.unlink-parent", "Hija", "Filiacion");
     await addParent(page, "padre", "Padre", "Filiacion");
     await addParent(page, "madre", "Madre", "Filiacion");
 
@@ -154,12 +268,12 @@ test.describe("Mantenimiento seguro de Etapa 8", () => {
     await expect(page.locator("svg title").filter({hasText: "Un solo progenitor registrado"})).toHaveCount(1);
   });
 
-  test("quita una pareja y conserva la coparentalidad", async ({page}) => {
+  test("quita una pareja y conserva la coparentalidad", async ({page, resources}) => {
     const childName = "Hija Coparental";
     const fatherName = "Padre Coparental";
     const motherName = "Madre Coparental";
 
-    await createIsolatedTree(page, "stage8.unlink-partner", "Hija", "Coparental");
+    await createIsolatedTree(page, resources, "stage8.unlink-partner", "Hija", "Coparental");
     await addParent(page, "padre", "Padre", "Coparental");
     await addParent(page, "madre", "Madre", "Coparental");
     await page.getByRole("button", {name: "Conectarlos"}).click();
@@ -187,13 +301,13 @@ test.describe("Mantenimiento seguro de Etapa 8", () => {
     await expect(relationshipRow(page, `Madre de ${childName}`)).toBeVisible();
   });
 
-  test("reasigna un progenitor existente sin eliminar personas ni parejas", async ({page}) => {
+  test("reasigna un progenitor existente sin eliminar personas ni parejas", async ({page, resources}) => {
     const childName = "Hija Reasignacion";
     const oldFatherName = "Padre Anterior";
     const motherName = "Madre Permanente";
     const newFatherName = "Padre Nuevo";
 
-    await createIsolatedTree(page, "stage8.reassign", "Hija", "Reasignacion");
+    await createIsolatedTree(page, resources, "stage8.reassign", "Hija", "Reasignacion");
     await addParent(page, "padre", "Padre", "Anterior");
     await addParent(page, "madre", "Madre", "Permanente");
     await addPartner(page, "Padre", "Nuevo");
@@ -218,12 +332,12 @@ test.describe("Mantenimiento seguro de Etapa 8", () => {
     await expect(personSelector(page).locator("option:checked")).toHaveText(childName);
   });
 
-  test("actualiza el estado de pareja sin eliminar la relación", async ({page}) => {
+  test("actualiza el estado de pareja sin eliminar la relación", async ({page, resources}) => {
     const rootName = "Raiz Estado";
     const partnerName = "Pareja Estado";
     const partnerLabel = `Pareja de ${partnerName}`;
 
-    await createIsolatedTree(page, "stage8.partner-status", "Raiz", "Estado");
+    await createIsolatedTree(page, resources, "stage8.partner-status", "Raiz", "Estado");
     await addPartner(page, "Pareja", "Estado");
 
     let row = relationshipRow(page, partnerLabel);
