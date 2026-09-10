@@ -13,6 +13,7 @@ const addRelationshipFirestore = vi.hoisted(() => {
   const transactionSet = vi.fn();
   const transactionUpdate = vi.fn();
   const transactionDelete = vi.fn();
+  const ownerQueryGet = vi.fn();
   const serverTimestamp = vi.fn(() => "server-timestamp");
   const relationshipDoc = {
     id: "new-relationship",
@@ -58,7 +59,14 @@ const addRelationshipFirestore = vi.hoisted(() => {
   };
   const treesCollection = {
     doc: vi.fn(() => treeRef),
+    where: vi.fn(),
   };
+  const ownerQuery = {
+    limit: vi.fn(),
+    get: ownerQueryGet,
+  };
+  ownerQuery.limit.mockReturnValue(ownerQuery);
+  treesCollection.where.mockReturnValue(ownerQuery);
   const db = {
     collection: vi.fn(() => treesCollection),
     batch,
@@ -84,6 +92,9 @@ const addRelationshipFirestore = vi.hoisted(() => {
     deleteToQuery,
     personsLimitQuery,
     treeRef,
+    treesCollection,
+    ownerQuery,
+    ownerQueryGet,
   };
 });
 
@@ -100,10 +111,16 @@ vi.mock("firebase-admin/firestore", () => ({
 }));
 
 import {
+  addChildToUnion,
+  addParentToPerson,
   addPartnerToPerson,
+  claimTreeOwnership,
+  createTreeWithRootPerson,
   createUnion,
   deletePerson,
   deleteRelationship,
+  getMyTreeSummary,
+  getTreeData,
   reassignParentRelationship,
   updatePartnerRelationshipStatus,
   updatePerson,
@@ -118,6 +135,115 @@ import {
   validateNewParentLink,
   type ExistingParentLink,
 } from "./parentRelationshipPolicy.js";
+
+describe("P09 callable security", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    addRelationshipFirestore.ownershipGet.mockResolvedValue({
+      exists: true,
+      data: () => ({ownerId: "owner-a"}),
+    });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("createTreeWithRootPerson rejects unauthenticated callers before writes", async () => {
+    const error = await createTreeWithRootPerson.run({
+      data: {},
+    } as never).catch((value) => value);
+
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe("unauthenticated");
+    expect(addRelationshipFirestore.db.batch).not.toHaveBeenCalled();
+  });
+
+  it("getMyTreeSummary queries only trees owned by the caller", async () => {
+    const trees = [
+      {id: "tree-a", ownerId: "owner-a", rootPersonId: "root-a"},
+      {id: "tree-b", ownerId: "owner-b", rootPersonId: "root-b"},
+    ];
+    const ownerTrees = trees.filter((tree) => tree.ownerId === "owner-a");
+    addRelationshipFirestore.ownerQueryGet.mockResolvedValue({
+      empty: false,
+      docs: ownerTrees.map((tree) => ({
+        id: tree.id,
+        data: () => tree,
+      })),
+    });
+
+    const result = await getMyTreeSummary.run({
+      auth: {uid: "owner-a"},
+      data: {},
+    } as never);
+
+    expect(addRelationshipFirestore.treesCollection.where)
+      .toHaveBeenCalledWith("ownerId", "==", "owner-a");
+    expect(addRelationshipFirestore.ownerQuery.limit).toHaveBeenCalledWith(1);
+    expect(result).toEqual({treeId: "tree-a", rootPersonId: "root-a"});
+    expect(result).not.toEqual({treeId: "tree-b", rootPersonId: "root-b"});
+  });
+
+  it("getTreeData rejects a cross-owner caller before reading subcollections", async () => {
+    const error = await getTreeData.run({
+      auth: {uid: "owner-b"},
+      data: {treeId: "tree-a"},
+    } as never).catch((value) => value);
+
+    expect(error.code).toBe("permission-denied");
+    expect(addRelationshipFirestore.treeRef.collection).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["createUnion", createUnion, {
+      treeId: "tree-a",
+      personAId: "person-a",
+      personBId: "person-b",
+    }],
+    ["addPartnerToPerson", addPartnerToPerson, {
+      treeId: "tree-a",
+      personId: "person-a",
+      partnerData: {firstName: "Partner", lastName: "Other"},
+    }],
+    ["addChildToUnion", addChildToUnion, {
+      treeId: "tree-a",
+      unionId: "single:person-a",
+      childData: {firstName: "Child", lastName: "Other"},
+      parentRoles: {"person-a": "father"},
+    }],
+    ["addParentToPerson", addParentToPerson, {
+      treeId: "tree-a",
+      childId: "child-a",
+      parentRole: "father",
+      parentData: {firstName: "Parent", lastName: "Other"},
+    }],
+  ])("%s rejects a cross-owner caller before writes", async (_name, callable, data) => {
+    const error = await callable.run({
+      auth: {uid: "owner-b"},
+      data,
+    } as never).catch((value) => value);
+
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe("permission-denied");
+    expect(addRelationshipFirestore.db.runTransaction).not.toHaveBeenCalled();
+    expect(addRelationshipFirestore.db.batch).not.toHaveBeenCalled();
+  });
+
+  it("claimTreeOwnership rejects execution without Emulator signals", async () => {
+    vi.stubEnv("FIREBASE_EMULATOR_HUB", "");
+    vi.stubEnv("FUNCTIONS_EMULATOR", "");
+
+    const error = await claimTreeOwnership.run({
+      auth: {uid: "owner-a"},
+      data: {treeId: "tree-a"},
+    } as never).catch((value) => value);
+
+    expect(error).toBeInstanceOf(HttpsError);
+    expect(error.code).toBe("failed-precondition");
+    expect(addRelationshipFirestore.db.collection).not.toHaveBeenCalled();
+  });
+});
 
 const validUpdatePersonRequest = (overrides: Record<string, unknown> = {}) => ({
   auth: {uid: "owner"},

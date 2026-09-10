@@ -19,6 +19,7 @@
     "test": "npm run test:unit && npm run test:e2e"
   },
   "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.2",
     "@playwright/test": "^1.60.0",
     "concurrently": "^9.2.1",
     "wait-on": "^9.0.3"
