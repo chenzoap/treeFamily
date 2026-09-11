@@ -2,6 +2,13 @@
 
 Este archivo resume los cambios relevantes de cada candidato y release de TreeFamily.
 
+## [0.1.0-rc.2] - 2026-09-11
+
+### Fixed
+
+- Corregida la configuración productiva de Firebase para que Functions, Firestore Rules y Hosting resuelvan desde la raíz común `packages`.
+- El directorio público de Hosting ahora resuelve a `packages/frontend/dist` sin escapar del project directory aceptado por Firebase CLI.
+
 ## [0.1.0-rc.1] - 2026-09-10
 
 ### Added
