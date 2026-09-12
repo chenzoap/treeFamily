@@ -2,6 +2,23 @@
 
 Este archivo resume los cambios relevantes de cada candidato y release de TreeFamily.
 
+## [0.1.0] - 2026-09-12
+
+### Released
+
+- Publicado el MVP de TreeFamily en Firebase Hosting.
+- Conectado el dominio productivo `treefamily.arsalix.com` con HTTPS administrado.
+- Habilitada la autenticación productiva Email/Password.
+- Publicadas las Firestore Rules productivas.
+- Publicadas las 12 Cloud Functions aprobadas.
+- Completado satisfactoriamente el smoke test end-to-end de producción.
+
+### Validation
+
+- Validados Authentication, callable Functions, escrituras Firestore, lecturas restringidas por owner y render del árbol.
+- Validada la persistencia del mismo árbol tras logout y login.
+- Promovido `v0.1.0-rc.2` como candidato validado para el release estable.
+
 ## [0.1.0-rc.2] - 2026-09-11
 
 ### Fixed
