@@ -1,9 +1,10 @@
-import {useEffect, useRef, useState} from "react";
+import {useRef, useState} from "react";
 import {
   deletePersonErrorMessage,
   finishDeleteSubmission,
   startDeleteSubmission,
 } from "./DeletePersonDialog.logic";
+import {useDialogFocus} from "./DialogFocus";
 
 type DeletePersonDialogProps = {
   personName: string;
@@ -20,20 +21,8 @@ export default function DeletePersonDialog({
 }: DeletePersonDialogProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const cancelButtonRef = useRef<HTMLButtonElement>(null);
   const submissionGateRef = useRef(false);
-
-  useEffect(() => {
-    cancelButtonRef.current?.focus();
-  }, []);
-
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) onCancel();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onCancel, submitting]);
+  const dialogRef = useDialogFocus<HTMLDivElement>(onCancel, submitting);
 
   const confirm = async () => {
     if (!startDeleteSubmission(submissionGateRef)) return;
@@ -54,6 +43,7 @@ export default function DeletePersonDialog({
       role="presentation"
     >
       <section
+        ref={dialogRef}
         className="w-full max-w-md rounded-2xl border border-red-200 bg-white p-5 shadow-2xl"
         role="dialog"
         aria-modal="true"
@@ -89,7 +79,6 @@ export default function DeletePersonDialog({
 
         <div className="mt-5 grid grid-cols-2 gap-2">
           <button
-            ref={cancelButtonRef}
             type="button"
             className="rounded-xl border border-slate-300 bg-white px-4 py-3 font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={submitting}

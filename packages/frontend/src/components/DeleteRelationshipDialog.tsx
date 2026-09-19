@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from "react";
+import {useRef, useState} from "react";
 import {
   deleteRelationshipErrorMessage,
   type RelationshipPresentation,
@@ -7,6 +7,7 @@ import {
   finishDeleteSubmission,
   startDeleteSubmission,
 } from "./DeletePersonDialog.logic";
+import {useDialogFocus} from "./DialogFocus";
 
 type Props = {
   relationship: RelationshipPresentation;
@@ -21,17 +22,8 @@ export default function DeleteRelationshipDialog({
 }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const cancelButtonRef = useRef<HTMLButtonElement>(null);
   const submissionGateRef = useRef(false);
-
-  useEffect(() => cancelButtonRef.current?.focus(), []);
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && !submitting) onCancel();
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [onCancel, submitting]);
+  const dialogRef = useDialogFocus<HTMLElement>(onCancel, submitting);
 
   const confirm = async () => {
     if (!startDeleteSubmission(submissionGateRef)) return;
@@ -49,6 +41,7 @@ export default function DeleteRelationshipDialog({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4" role="presentation">
       <section
+        ref={dialogRef}
         className="w-full max-w-lg rounded-2xl border border-red-200 bg-white p-5 shadow-2xl"
         role="dialog"
         aria-modal="true"
@@ -82,7 +75,7 @@ export default function DeleteRelationshipDialog({
         {error && <p className="mt-4 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">{error}</p>}
 
         <div className="mt-5 grid grid-cols-2 gap-2">
-          <button ref={cancelButtonRef} type="button" disabled={submitting} onClick={onCancel} className="rounded-xl border border-slate-300 bg-white px-4 py-3 font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
+          <button type="button" disabled={submitting} onClick={onCancel} className="rounded-xl border border-slate-300 bg-white px-4 py-3 font-bold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50">
             Cancelar
           </button>
           <button type="button" disabled={submitting} onClick={confirm} className="rounded-xl bg-red-700 px-4 py-3 font-bold text-white shadow-sm transition hover:bg-red-800 disabled:cursor-not-allowed disabled:opacity-50">

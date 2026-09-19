@@ -206,7 +206,7 @@ describe("diálogo de reasignación", () => {
     expect(markup).toContain('aria-modal="true"');
     expect(markup).toContain('aria-labelledby="reassign-parent-title"');
     expect(markup).toContain('aria-describedby="reassign-parent-description"');
-    expect(dialogSource).toContain("cancelButtonRef.current?.focus()");
+    expect(dialogSource).toContain("useDialogFocus");
   });
 
   it("explica preservación, parejas, reorganización y desconexión", () => {
@@ -239,8 +239,8 @@ describe("diálogo de reasignación", () => {
     expect(dialogSource).toContain("disabled={submitting || !canSubmit}");
   });
 
-  it("Escape solo cierra idle", () => {
-    expect(dialogSource).toContain('event.key === "Escape" && !submitting');
+  it("usa el helper común para Escape, contención y retorno de foco", () => {
+    expect(dialogSource).toContain("useDialogFocus");
   });
 });
 

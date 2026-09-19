@@ -474,28 +474,50 @@ function PersonFields({
   onChange: (next: PersonPayload) => void;
   nameLabel: string;
 }) {
+  const [touched, setTouched] = useState<Record<string, boolean>>({});
+  const firstNameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    firstNameRef.current?.focus();
+  }, []);
   const inputClass =
     "w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm text-[#2B2B2B] outline-none transition placeholder:text-slate-400 focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15";
+  const fieldPrefix = nameLabel.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+  const fieldId = (name: string) => `${fieldPrefix}-${name}`;
+  const requiredError = (name: "firstName" | "lastName", label: string) =>
+    touched[name] && value[name].trim().length === 0 ? `Ingresa ${label.toLowerCase()}.` : null;
+  const markTouched = (name: string) => setTouched((current) => ({ ...current, [name]: true }));
+  const fieldError = (name: "firstName" | "lastName", label: string) => requiredError(name, label);
 
   return (
     <div className="space-y-3">
       <div>
-        <label className="mb-1 block text-xs font-semibold text-slate-600">
+        <label htmlFor={fieldId("first-name")} className="mb-1 block text-xs font-semibold text-slate-600">
           {nameLabel}
         </label>
         <input
+          ref={firstNameRef}
+          id={fieldId("first-name")}
+          name={`${fieldPrefix}.firstName`}
           className={inputClass}
-          placeholder="Nombre *"
+          placeholder="Nombre"
+          required
+          aria-required="true"
+          aria-invalid={Boolean(fieldError("firstName", nameLabel))}
+          aria-describedby={fieldError("firstName", nameLabel) ? `${fieldId("first-name")}-error` : undefined}
           value={value.firstName}
           onChange={(e) => onChange({ ...value, firstName: e.target.value })}
+          onBlur={() => markTouched("firstName")}
         />
+        {fieldError("firstName", nameLabel) && <p id={`${fieldId("first-name")}-error`} className="mt-1 text-xs text-red-700" role="alert">{fieldError("firstName", nameLabel)}</p>}
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-semibold text-slate-600">
+        <label htmlFor={fieldId("middle-name")} className="mb-1 block text-xs font-semibold text-slate-600">
           Segundo nombre
         </label>
         <input
+          id={fieldId("middle-name")}
+          name={`${fieldPrefix}.middleName`}
           className={inputClass}
           placeholder="Opcional"
           value={value.middleName ?? ""}
@@ -504,22 +526,32 @@ function PersonFields({
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-semibold text-slate-600">
+        <label htmlFor={fieldId("last-name")} className="mb-1 block text-xs font-semibold text-slate-600">
           Apellido
         </label>
         <input
+          id={fieldId("last-name")}
+          name={`${fieldPrefix}.lastName`}
           className={inputClass}
-          placeholder="Apellido *"
+          placeholder="Apellido"
+          required
+          aria-required="true"
+          aria-invalid={Boolean(fieldError("lastName", "Apellido"))}
+          aria-describedby={fieldError("lastName", "Apellido") ? `${fieldId("last-name")}-error` : undefined}
           value={value.lastName}
           onChange={(e) => onChange({ ...value, lastName: e.target.value })}
+          onBlur={() => markTouched("lastName")}
         />
+        {fieldError("lastName", "Apellido") && <p id={`${fieldId("last-name")}-error`} className="mt-1 text-xs text-red-700" role="alert">{fieldError("lastName", "Apellido")}</p>}
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-semibold text-slate-600">
+        <label htmlFor={fieldId("second-last-name")} className="mb-1 block text-xs font-semibold text-slate-600">
           Segundo apellido
         </label>
         <input
+          id={fieldId("second-last-name")}
+          name={`${fieldPrefix}.secondLastName`}
           className={inputClass}
           placeholder="Opcional"
           value={value.secondLastName ?? ""}
@@ -528,10 +560,12 @@ function PersonFields({
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-semibold text-slate-600">
+        <label htmlFor={fieldId("birth-date")} className="mb-1 block text-xs font-semibold text-slate-600">
           Fecha de nacimiento
         </label>
         <input
+          id={fieldId("birth-date")}
+          name={`${fieldPrefix}.birthDate`}
           className={inputClass}
           type="date"
           title="Fecha de nacimiento opcional"
@@ -541,10 +575,12 @@ function PersonFields({
       </div>
 
       <div>
-        <label className="mb-1 block text-xs font-semibold text-slate-600">
+        <label htmlFor={fieldId("birth-place")} className="mb-1 block text-xs font-semibold text-slate-600">
           Lugar de nacimiento
         </label>
         <input
+          id={fieldId("birth-place")}
+          name={`${fieldPrefix}.birthPlace`}
           className={inputClass}
           placeholder="Opcional"
           value={value.birthPlace ?? ""}
@@ -570,6 +606,8 @@ export default function Stage4Panel() {
   const [action, setAction] = useState<QuickAction>("father");
   const [notice, setNotice] = useState<UiNotice>(null);
   const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
+  const [editingPersonDirty, setEditingPersonDirty] = useState(false);
+  const [pendingPersonId, setPendingPersonId] = useState<string | null>(null);
   const [personPendingDeletionId, setPersonPendingDeletionId] =
     useState<string | null>(null);
   const [relationshipPendingDeletion, setRelationshipPendingDeletion] =
@@ -597,6 +635,24 @@ export default function Stage4Panel() {
   const [saving, setSaving] = useState(false);
   const [parentPairSuggestion, setParentPairSuggestion] = useState<ParentPairSuggestion | null>(null);
   const preserveNoticeOnNextContextChangeRef = useRef(false);
+
+  const requestPersonChange = (nextPersonId: string) => {
+    if (editingPersonId && editingPersonDirty && nextPersonId !== activePersonId) {
+      setPendingPersonId(nextPersonId || null);
+      return;
+    }
+    setEditingPersonId(null);
+    setEditingPersonDirty(false);
+    setSelectedPersonId(nextPersonId || null);
+  };
+
+  const discardDraftAndChangePerson = () => {
+    const nextPersonId = pendingPersonId;
+    setPendingPersonId(null);
+    setEditingPersonId(null);
+    setEditingPersonDirty(false);
+    setSelectedPersonId(nextPersonId);
+  };
 
   const addPartnerToPersonFn = useMemo(() => httpsCallable(functions, "addPartnerToPerson"), []);
   const addChildToUnionFn = useMemo(() => httpsCallable(functions, "addChildToUnion"), []);
@@ -732,7 +788,7 @@ export default function Stage4Panel() {
   }, [action, activePersonId]);
 
   useEffect(() => {
-    if (editingPersonId && editingPersonId !== activePersonId) {
+    if (editingPersonId && editingPersonId !== activePersonId && !editingPersonDirty) {
       setEditingPersonId(null);
     }
     if (
@@ -741,7 +797,7 @@ export default function Stage4Panel() {
     ) {
       setPersonPendingDeletionId(null);
     }
-  }, [activePersonId, editingPersonId, personPendingDeletionId]);
+  }, [activePersonId, editingPersonDirty, editingPersonId, personPendingDeletionId]);
 
   useEffect(() => {
     setSelectedExistingChildIds([]);
@@ -1039,7 +1095,7 @@ export default function Stage4Panel() {
           <select
             className="w-full rounded-xl border border-[#D8D0C4] bg-[#FFFCF7] px-3 py-2.5 text-sm font-semibold text-[#2B2B2B] outline-none transition focus:border-[#2F5D50] focus:ring-2 focus:ring-[#2F5D50]/15"
             value={activePersonId ?? ""}
-            onChange={(e) => setSelectedPersonId(e.target.value || null)}
+            onChange={(e) => requestPersonChange(e.target.value)}
           >
             <option value="">Selecciona una persona</option>
             {persons.map((p) => (
@@ -1288,12 +1344,27 @@ export default function Stage4Panel() {
           key={editingPersonId}
           treeId={treeId}
           person={activePerson}
-          onCancel={() => setEditingPersonId(null)}
+          onCancel={() => { setEditingPersonId(null); setEditingPersonDirty(false); }}
+          onDirtyChange={setEditingPersonDirty}
           onSaved={() => {
             setNotice({kind: "success", message: "Información actualizada correctamente."});
             setEditingPersonId(null);
+            setEditingPersonDirty(false);
           }}
         />
+      )}
+
+      {pendingPersonId && editingPersonId && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-slate-950/40 p-4" role="presentation">
+          <section className="w-full max-w-md rounded-2xl border border-amber-200 bg-white p-5 shadow-2xl" role="alertdialog" aria-modal="true" aria-labelledby="draft-change-title" aria-describedby="draft-change-description">
+            <h2 id="draft-change-title" className="text-lg font-bold text-slate-900">Tienes cambios sin guardar</h2>
+            <p id="draft-change-description" className="mt-2 text-sm leading-6 text-slate-600">Si cambias de persona, el borrador actual se descartará. Puedes seguir editando o descartarlo.</p>
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <button type="button" className="rounded-xl border border-slate-300 bg-white px-3 py-3 text-sm font-bold text-slate-700" onClick={() => setPendingPersonId(null)}>Seguir editando</button>
+              <button type="button" className="rounded-xl bg-[#2F5D50] px-3 py-3 text-sm font-bold text-white" onClick={discardDraftAndChangePerson}>Descartar y cambiar</button>
+            </div>
+          </section>
+        </div>
       )}
 
       {!editingPersonId && <section>

@@ -59,6 +59,7 @@ const TreeViewPage = () => {
   } = useTreeStore();
 
   const [authChecking, setAuthChecking] = useState(true);
+  const [mobileView, setMobileView] = useState<"panel" | "tree">("panel");
   const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -197,10 +198,14 @@ const TreeViewPage = () => {
             Cerrar sesión
           </button>
         </div>
+        <div className="mt-3 grid grid-cols-2 gap-2 md:hidden" role="tablist" aria-label="Vista móvil">
+          <button type="button" role="tab" aria-selected={mobileView === "panel"} className={`rounded-xl px-3 py-2 text-sm font-bold ${mobileView === "panel" ? "bg-[#2F5D50] text-white" : "border border-slate-300 bg-white text-slate-700"}`} onClick={() => setMobileView("panel")}>Panel</button>
+          <button type="button" role="tab" aria-selected={mobileView === "tree"} className={`rounded-xl px-3 py-2 text-sm font-bold ${mobileView === "tree" ? "bg-[#2F5D50] text-white" : "border border-slate-300 bg-white text-slate-700"}`} onClick={() => setMobileView("tree")}>Árbol</button>
+        </div>
       </header>
 
       <div className="flex min-h-0 flex-1 overflow-hidden p-4">
-        <aside className="mr-4 flex w-[400px] shrink-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+        <aside className={`${mobileView === "panel" ? "flex" : "hidden"} mr-0 w-full shrink-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm md:mr-4 md:flex md:w-[400px]`}>
           <div className="border-b border-slate-100 px-4 py-4">
             <p className="text-xs font-bold uppercase tracking-wide text-blue-700">
               Construye tu árbol
@@ -225,7 +230,7 @@ const TreeViewPage = () => {
           </div>
         </aside>
 
-        <main className="min-w-0 flex-1">
+        <main className={`${mobileView === "tree" ? "flex" : "hidden"} min-w-0 flex-1 md:flex`}>
           <section className="h-full rounded-2xl border border-slate-200 bg-white p-3 shadow-sm">
             {isLoadingTree ? (
               <div className="flex h-full items-center justify-center">

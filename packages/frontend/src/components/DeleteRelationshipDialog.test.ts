@@ -212,9 +212,7 @@ describe("DeleteRelationshipDialog", () => {
     expect(
       deleteRelationshipDialogSource.match(/disabled=\{submitting\}/g)
     ).toHaveLength(2);
-    expect(deleteRelationshipDialogSource).toContain(
-      'event.key === "Escape" && !submitting'
-    );
+    expect(deleteRelationshipDialogSource).toContain("useDialogFocus");
     expect(deleteRelationshipDialogSource).toContain(
       "startDeleteSubmission(submissionGateRef)"
     );

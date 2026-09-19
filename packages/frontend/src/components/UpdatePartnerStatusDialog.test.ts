@@ -212,7 +212,7 @@ describe("UpdatePartnerStatusDialog", () => {
     expect(markup).toContain('aria-labelledby="update-partner-status-title"');
     expect(markup).toContain('aria-describedby="update-partner-status-description"');
     expect(markup).toContain("Cambiar estado de relación con Luis José Ruiz");
-    expect(dialogSource).toContain("cancelButtonRef.current?.focus()");
+    expect(dialogSource).toContain("useDialogFocus");
   });
 
   it("explica preservación sin afirmar eliminación ni cambio parental", () => {
@@ -233,9 +233,7 @@ describe("UpdatePartnerStatusDialog", () => {
     expect(dialogSource).toContain('{submitting ? "Cambiando..."');
     expect(dialogSource.match(/disabled=\{submitting\}/g)).toHaveLength(2);
     expect(dialogSource).toContain("disabled={submitting || !canSubmit}");
-    expect(dialogSource).toContain(
-      'event.key === "Escape" && !submitting'
-    );
+    expect(dialogSource).toContain("useDialogFocus");
   });
 });
 

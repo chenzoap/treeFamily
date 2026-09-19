@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useForm } from "react-hook-form";
 import { httpsCallable } from "firebase/functions";
@@ -19,6 +19,7 @@ type EditPersonFormProps = {
   person: Person;
   onCancel: () => void;
   onSaved: () => void;
+  onDirtyChange?: (dirty: boolean) => void;
   updatePersonCall?: UpdatePersonCall;
 };
 
@@ -27,6 +28,7 @@ export default function EditPersonForm({
   person,
   onCancel,
   onSaved,
+  onDirtyChange,
   updatePersonCall,
 }: EditPersonFormProps) {
   const [submitError, setSubmitError] = useState<string | null>(null);
@@ -47,6 +49,11 @@ export default function EditPersonForm({
     mode: "onChange",
     defaultValues: personToEditValues(person),
   });
+
+  useEffect(() => {
+    onDirtyChange?.(isDirty);
+    return () => onDirtyChange?.(false);
+  }, [isDirty, onDirtyChange]);
 
   const onSubmit = async (data: EditPersonData) => {
     try {
