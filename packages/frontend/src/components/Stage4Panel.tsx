@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../lib/firebase";
 import { useTreeStore } from "../store/useTreeStore";
@@ -606,7 +606,14 @@ export default function Stage4Panel() {
   const [action, setAction] = useState<QuickAction>("father");
   const [notice, setNotice] = useState<UiNotice>(null);
   const [editingPersonId, setEditingPersonId] = useState<string | null>(null);
-  const [editingPersonDirty, setEditingPersonDirty] = useState(false);
+  const [editingPersonDirty, setEditingPersonDirtyState] = useState(false);
+  const editingPersonDirtyRef = useRef(false);
+  const setEditingPersonDirty = useCallback((dirty: boolean) => {
+    // A selection event can arrive before React commits this state update.
+    // Protect the draft using the latest notification from EditPersonForm.
+    editingPersonDirtyRef.current = dirty;
+    setEditingPersonDirtyState(dirty);
+  }, []);
   const [pendingPersonId, setPendingPersonId] = useState<string | null>(null);
   const [personPendingDeletionId, setPersonPendingDeletionId] =
     useState<string | null>(null);
@@ -637,7 +644,7 @@ export default function Stage4Panel() {
   const preserveNoticeOnNextContextChangeRef = useRef(false);
 
   const requestPersonChange = (nextPersonId: string) => {
-    if (editingPersonId && editingPersonDirty && nextPersonId !== activePersonId) {
+    if (editingPersonId && editingPersonDirtyRef.current && nextPersonId !== activePersonId) {
       setPendingPersonId(nextPersonId || null);
       return;
     }
