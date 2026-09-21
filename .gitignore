@@ -45,3 +45,9 @@ firestore-debug.log
 .firebase-sessions/
 firebase-export-*/
 firestore-debug.log
+
+# Isolated staging build
+packages/frontend/dist-staging/
+
+# Staging QA evidence (credentials use *.local)
+.staging-qa-results/
