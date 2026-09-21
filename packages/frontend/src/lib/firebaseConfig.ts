@@ -7,6 +7,17 @@ type FirebaseEnvironment = {
   [key: string]: string | boolean | undefined;
 };
 
+export function validateFirebaseConfigForBuild(
+  mode: string,
+  env: Record<string, string | boolean | undefined>,
+) {
+  // CI compiles production without deploy credentials. Production remains
+  // strict when the app initializes; staging is validated before it is emitted.
+  if (mode === "staging") {
+    getCloudFirebaseConfig({...env, DEV: false, MODE: mode});
+  }
+}
+
 export function getFirebaseConfig(env: FirebaseEnvironment) {
   if (env.DEV) {
     if (env.MODE === "staging") {

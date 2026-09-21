@@ -127,9 +127,10 @@ Límites de QA: Chromium de escritorio y emulación móvil con entrada táctil, 
 
 ## Verificación local, aislamiento y procesos
 
-- Frontend: 227/227 pruebas, incluidos 17 casos de configuración; lint y builds PASS.
+- Frontend: 230/230 pruebas, incluidos 20 casos de configuración; lint y builds PASS.
+- CI compila producción sin configuración desplegable: Vite valida anticipadamente solo el modo staging, mientras `firebaseConfig.ts` mantiene la validación estricta al inicializar producción.
 - Functions: 367/367 pruebas; lint y build PASS.
-- Aislamiento de wrapper, entrypoint y límites por proyecto: 7/7 PASS. Sus subprocesos Node necesitaron salir del sandbox para obtener resultados.
+- Aislamiento de workflow, wrapper, entrypoint y límites por proyecto: 8/8 PASS. Sus subprocesos Node necesitaron salir del sandbox para obtener resultados.
 - Builds negativos con projectId cruzado rechazados antes de generar bundle.
 - `git diff --check`: PASS. Variables locales, credenciales QA y builds staging ignorados por Git.
 - Emuladores conservados; producción rechaza IDs ajenos y staging valida ID, dominio Auth, número y App ID reales.

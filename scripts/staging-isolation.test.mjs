@@ -15,6 +15,12 @@ test('staging uses separate Hosting output and canonical backend resources', () 
   assert.deepEqual(staging.firestore, production.firestore);
   assert.equal(read('packages/.firebaserc').projects.default, 'tree-gen-chenzoap-2026');
 });
+test('CI uses Node 24 and the config-free production build path without bypassing staging', () => {
+  const workflow = readFileSync('.github/workflows/ci.yml', 'utf8');
+  assert.match(workflow, /node-version:\s*24/);
+  assert.match(workflow, /run:\s*npm run build -w packages\/frontend/);
+  assert.doesNotMatch(workflow, /build:staging|VITE_FIREBASE_|CI=true/);
+});
 for (const args of [[], ['--project','tree-gen-chenzoap-2026','--config','packages/firebase.staging.json'], ['--project','treefamily-staging-2026','--config','packages/firebase.json']]) {
   test(`remote wrapper rejects unsafe target before accessing Firebase: ${args.join(' ')}`, () => {
     const result = spawnSync(process.execPath,['scripts/firebase-staging.mjs','deploy-hosting',...args],{encoding:'utf8'});

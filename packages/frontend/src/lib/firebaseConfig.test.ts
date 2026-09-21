@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { getFirebaseConfig, PRODUCTION_PROJECT_ID, STAGING_PROJECT_ID } from './firebaseConfig';
+import {
+  getFirebaseConfig,
+  PRODUCTION_PROJECT_ID,
+  STAGING_PROJECT_ID,
+  validateFirebaseConfigForBuild,
+} from './firebaseConfig';
 
 const staging = {
   DEV: false,
@@ -26,6 +31,22 @@ describe('Firebase environment isolation', () => {
   });
   it('preserves production configuration', () => {
     expect(getFirebaseConfig(production).projectId).toBe(PRODUCTION_PROJECT_ID);
+  });
+  it('allows a config-free production compile while runtime validation remains strict', () => {
+    expect(() => validateFirebaseConfigForBuild('production', {})).not.toThrow();
+    expect(() => getFirebaseConfig({DEV:false, MODE:'production'})).toThrow(
+      'Missing Firebase production configuration: VITE_FIREBASE_PROJECT_ID',
+    );
+  });
+  it('requires configuration for every staging build', () => {
+    expect(() => validateFirebaseConfigForBuild('staging', {})).toThrow(
+      'Missing Firebase staging configuration: VITE_FIREBASE_PROJECT_ID',
+    );
+  });
+  it('rejects production identity during staging build validation', () => {
+    expect(() => validateFirebaseConfigForBuild('staging', production)).toThrow(
+      'Unexpected Firebase projectId for staging configuration',
+    );
   });
   it.each([STAGING_PROJECT_ID, 'another-project'])('rejects foreign production project %s', project => {
     expect(() => getFirebaseConfig({...production, VITE_FIREBASE_PROJECT_ID:project})).toThrow();
