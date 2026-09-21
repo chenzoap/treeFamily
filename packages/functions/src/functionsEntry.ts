@@ -1,3 +1,4 @@
+import "./stagingOptions.js";
 import * as allFunctions from "./index.js";
 
 const {claimTreeOwnership, ...productionFunctions} = allFunctions;
